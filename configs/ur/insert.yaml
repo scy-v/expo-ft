@@ -1,0 +1,128 @@
+keyboard_terminal_only: false
+experiment:
+  name: insert_black_rack_into_blue_slot
+output_root: ./logs/ur-evaluation
+policy:
+  location: remote
+  host: 127.0.0.1
+  bind_host: 0.0.0.0
+  port: 8000
+  cuda_visible_devices: '0'
+task:
+  description: Insert the black rack into the blue slot
+video:
+  fps: 15
+  visualize: true
+record:
+  num_episodes: 20
+  episode_timeout_sec: 60
+  action_timing_enabled: true
+  save_logs: true
+robot:
+  kind: ur
+  ip: 192.168.201.11
+  gripper_port: /dev/ur5e_left_gripper
+  gripper_reverse: false
+  init_gripper: true
+  fix_gripper: false
+  close_threshold: 0.7
+  target_reached_gripper_open_threshold: 0.7
+  gripper_force: 60
+  gripper_speed: 100
+  pre_reset_tcp_pose: null
+  init_tcp_pose:
+  - 0.389694
+  - 0.107973
+  - 0.382018
+  - -3.14
+  - 0.0
+  - -1.57
+  init_pose_range:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  target_tcp_pose: null
+  target_threshold: null
+  show_target_error: false
+  action_fps: 10
+  debug: false
+  control_space: force
+  reference_frame: tcp
+  filter_zero_output: false
+  action_idle_hold_enabled: true
+  action_idle_position_threshold: 0.0001
+  action_idle_rotation_threshold: 0.001
+  payload:
+    mass: 1.601
+    cog:
+    - 0.011
+    - -0.002
+    - 0.052
+  position_mode:
+    speed: 0.2
+    acceleration: 0.2
+    servo_time: 0.1
+    lookahead_time: 0.1
+    gain: 300
+  force_mode:
+    continuous_tracking: true
+    control_frame_euler_deg:
+    - 0.0
+    - 0.0
+    - 0.0
+    kp: 1200
+    kd: 600
+    kp_rot: 20
+    kd_rot: 4
+    rtde_freq: 100
+    select_vector:
+    - 1
+    - 1
+    - 1
+    - 0
+    - 0
+    - 1
+    force_limit:
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    pos_delta: 0.048
+    vel_delta: 4.0
+    gain_scale: 1.5
+cameras:
+  wrist_cam_serial: '944622073455'
+  exterior_cam_serial: '348522072391'
+  fps: 15
+  width: 640
+  height: 480
+model:
+  kind: sft
+  architecture: full
+  checkpoint_dir: ./checkpoints/sft/ur_insert/2500
+  norm_stats_path: ./checkpoints/sft/ur_insert/2500/assets/scylearning/insert_black_rack_into_blue_slot_20260916_v01/norm_stats.json
+  action_horizon: 50
+  replan_steps: 8
+  sample_steps: 10
+  run_config: ./checkpoints/online_rl/run_001/ur_run.json
+online_workspace:
+  lower:
+  - 0.0
+  - -0.45
+  - 0.0
+  - -3.663598775598
+  - -0.523598775598
+  - -3.140796326795
+  upper:
+  - 0.9
+  - 0.45
+  - 0.6
+  - -2.616401224402
+  - 0.523598775598
+  - 0.000796326795
+online_gripper_threshold: 0.5

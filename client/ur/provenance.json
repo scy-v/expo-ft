@@ -1,0 +1,32 @@
+{
+  "source": "/home/suchenyu/RLinf-rltoken",
+  "commit": "f54ac811113c3e6df1ab94a9648d43785596a04e",
+  "files": {
+    "evaluations/realworld/vla_precision_ur/ur.py": "ur.py",
+    "evaluations/realworld/vla_precision_ur/recording.py": "recording.py",
+    "evaluations/realworld/vla_precision_ur/plots.py": "plots.py",
+    "evaluations/realworld/vla_precision_ur/utils.py": "utils.py",
+    "evaluations/realworld/vla_precision_ur/image_tools.py": "image_tools.py",
+    "rlinf/utils/robot_lifecycle.py": "robot_lifecycle.py",
+    "rlinf/utils/keyboard_focus.py": "keyboard_focus.py",
+    "rlinf/utils/ur_logging.py": "ur_logging.py",
+    "rlinf/envs/real/wrappers/episode/keyboard.py": "keyboard_listener.py"
+  },
+  "changes": [
+    "Remove RLinf framework and RLT routing dependencies",
+    "Use EXPO JAX policy adapter",
+    "Allow hardware-only environment construction",
+    "Lazy vendor SDK imports; independent RGB RealSense adapter",
+    "EXPO-paced online action submission"
+  ],
+  "adapted_from": {
+    "keyboard.py": [
+      "rlinf/robotics/parts/teleop/keyboard.py",
+      "rlinf/envs/real/ur5e/base.py:keyboard_action_to_env"
+    ],
+    "online_backend.py": [
+      "rlinf/envs/real/cartesian.py:_clip_position_to_safety_box",
+      "rlinf/envs/real/utils/pose.py:clip_euler_to_target_window"
+    ]
+  }
+}

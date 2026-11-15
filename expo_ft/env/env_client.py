@@ -38,6 +38,7 @@ class EnvClient:
         # Termination/detection piggybacked on the last get_observation() response,
         # consumed by get_info_for_step() so it needs no separate round-trip.
         self._last_info = None
+        self.last_step_executed = True
         # The accept server runs in a background thread and hands each incoming
         # connection to the calling loop via this condition/slot.
         self._server = None
@@ -168,9 +169,10 @@ class EnvClient:
         response = self._call_operation("reset", {"env_id": env_id})
         return response["observation"], response["done"]
 
-    def step(self, env_id: str, action: np.ndarray) -> Tuple[np.ndarray, str]:
+    def step(self, env_id: str, action: np.ndarray, *, action_available: bool = True) -> Tuple[np.ndarray, str]:
         """Step the environment. Returns (real_executed_action, action_type)."""
-        response = self._call_operation("step", {"env_id": env_id, "action": action})
+        response = self._call_operation("step", {"env_id": env_id, "action": action, "action_available": action_available})
+        self.last_step_executed = response.get("executed", True)
         real_action = np.array(response.get("action", action))
         action_type = response.get("action_type", "policy")
         return real_action, action_type
@@ -250,9 +252,13 @@ class EnvClientWrapper:
         observation, _ = self._call("reset", lambda: self.client.reset(self.env_id))
         return observation
 
-    def step(self, action):
+    def step(self, action, *, action_available=True):
         """Step the environment. Returns (real_executed_action, action_type)."""
-        return self._call("step", lambda: self.client.step(self.env_id, action))
+        return self._call("step", lambda: self.client.step(self.env_id, action, action_available=action_available))
+
+    @property
+    def last_step_executed(self):
+        return self.client.last_step_executed
 
     def get_observation(self):
         """Get the observation of the environment."""

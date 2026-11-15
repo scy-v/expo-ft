@@ -1,0 +1,12 @@
+# Source this file from any directory.
+EXPO_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export UV_CACHE_DIR="$EXPO_REPO_ROOT/expo-setup/uv-cache"
+export UV_PYTHON_INSTALL_DIR="$EXPO_REPO_ROOT/expo-setup/python"
+export HF_HOME="$EXPO_REPO_ROOT/expo-setup/outputs/huggingface"
+export HF_LEROBOT_HOME="$HF_HOME/lerobot"
+export OPENPI_DATA_HOME="$EXPO_REPO_ROOT/expo-setup/outputs/openpi"
+export TORCH_HOME="$EXPO_REPO_ROOT/expo-setup/outputs/torch"
+export JAX_COMPILATION_CACHE_DIR="$EXPO_REPO_ROOT/expo-setup/outputs/jax"
+export WANDB_DIR="$EXPO_REPO_ROOT/logs/wandb"
+mkdir -p "$WANDB_DIR"
+source "$EXPO_REPO_ROOT/.venv/bin/activate"

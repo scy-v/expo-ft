@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import os
 import pathlib
 from typing import Any, Dict
 
@@ -106,7 +107,8 @@ def set_compilation_cache_dir(tag: str) -> str:
     runs that place the same computation on the same device, so scope the dir by
     driver, learner, and device count (all three decide those placements).
     """
-    cache_dir = epath.Path("~/.cache/jax").expanduser() / f"{tag}-n{jax.device_count()}"
+    cache_root = os.environ.get("JAX_COMPILATION_CACHE_DIR", "~/.cache/jax")
+    cache_dir = epath.Path(cache_root).expanduser() / f"{tag}-n{jax.device_count()}"
     jax.config.update("jax_compilation_cache_dir", str(cache_dir))
     logging.info("JAX compilation cache: %s", cache_dir)
     return str(cache_dir)
@@ -159,10 +161,17 @@ def build_pi05_config(config):
     pi05_assets_dir = agent_kwargs.pop("pi05_assets_dir", "") or None
     pi05_asset_id = agent_kwargs.pop("pi05_asset_id", "") or None
     model_cls = agent_kwargs.pop("model_cls")
+    ur_horizon = agent_kwargs.pop("pi05_action_horizon", 50)
 
-    pi05_train_config = openpi_config.get_config(
-        pi05_config_name, weight_loader_path=pi05_weight_loader_path
-    )
+    if pi05_config_name in {"expo_pi05_ur_full", "expo_pi05_ur_lora"}:
+        from expo_ft.agents.vla.ur5e_data import make_train_config
+        pi05_train_config = make_train_config(
+            lora=pi05_config_name.endswith("_lora"), action_horizon=ur_horizon,
+        )
+    else:
+        pi05_train_config = openpi_config.get_config(
+            pi05_config_name, weight_loader_path=pi05_weight_loader_path
+        )
     if pi05_weight_loader_path:
         # Use a loader that tolerates both openpi-style ("params") and
         # train_offline_rtc.py-style ("actor_params") checkpoint trees.

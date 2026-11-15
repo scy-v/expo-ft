@@ -122,10 +122,13 @@ def main(_):
         resume=FLAGS.resume,
     )
 
+    from expo_ft.utils.ur_run import write_run_config
+    write_run_config(log_dir, FLAGS.config, FLAGS.config_task, FLAGS.replan_steps, resuming=resuming)
+
     init_wandb(checkpoint_dir_path, resuming, FLAGS.project_name, FLAGS.run_name)
     wandb.config.update(FLAGS.flag_values_dict(), allow_val_change=resuming)
 
-    if FLAGS.config_task.env_type == "droid":
+    if FLAGS.config_task.env_type in {"droid", "ur"}:
         dataset = process_droid_dataset(
             FLAGS.dataset_path,
             FLAGS.config_task,
@@ -363,7 +366,7 @@ def main(_):
 
         with timer.context("act"):
             last_control_start = time.time()
-            real_action, action_type = env.step(action.tolist())
+            real_action, action_type = env.step(action.tolist(), action_available=has_action)
 
         # Wire time of this step's env RPCs, as measured by the client wrapper.
         step_metrics["timing/network_ms"] = env.pop_network_ms()
@@ -376,7 +379,7 @@ def main(_):
             action_plan.clear()
             sampler.on_human_takeover()
 
-        if (has_action or action_type == "human") and not done:
+        if (has_action or action_type == "human") and not done and env.last_step_executed:
             transition = dict(
                 observations=observation,
                 actions=real_action,

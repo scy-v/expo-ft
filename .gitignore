@@ -15,3 +15,26 @@ assets/
 client/.venv/
 
 log/
+
+# Local reproduction environment and evidence
+expo-setup/logs/
+expo-setup/uv-cache/
+expo-setup/python/
+expo-setup/outputs/
+# These paths may be symlinks to /data (directory-only rules do not match symlinks).
+/.venv
+/data
+/checkpoints
+/assets
+/logs
+/expo-setup/uv-cache
+/expo-setup/python
+/expo-setup/outputs
+
+# Generated model weights and dataset shards, even outside the standard directories.
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.hdf5
+*.parquet

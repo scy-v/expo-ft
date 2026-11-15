@@ -134,10 +134,17 @@ async def _handle_environment_request(websocket):
                     env_id = f"{env_name}_{env_usage}_{_env_create_counter}"
                     
                     logger.info(f"Creating environment {env_id}...")
+                    if task_config.env_type == "ur":
+                        for old_id, old_env in list(_env_storage.items()):
+                            if getattr(old_env, "_expo_close_on_disconnect", False):
+                                old_env.close()
+                                del _env_storage[old_id]
                     env_kwargs = dict(task_config)
                     env_kwargs["video_dir"] = request.get("video_dir") or ""
                     env_kwargs["env_usage"] = env_usage
                     env = task_config.env(**env_kwargs)
+                    if task_config.env_type == "ur":
+                        env._expo_close_on_disconnect = True
                     _env_storage[env_id] = env
                     logger.info(f"Environment {env_id} created successfully")
                     
@@ -171,6 +178,8 @@ async def _handle_environment_request(websocket):
                         response = {"status": "error", "message": f"Environment {env_id} not found"}
                     else:
                         sent_action = sent_action.astype(np.float64)
+                        if _task_config.env_type == "ur" and not np.isfinite(sent_action).all():
+                            raise ValueError("Non-finite UR action")
                         if not np.isfinite(sent_action).all():
                             logger.warning(
                                 "Action contains NaN/Inf; replacing with zeros. "
@@ -191,12 +200,16 @@ async def _handle_environment_request(websocket):
                         sent_is_invalid = np.allclose(sent_action, -1.0)
                         if is_human or not sent_is_invalid:
                             t_env_step0 = time.perf_counter()
-                            step_result = env.step(real_action)
+                            if _task_config.env_type == "ur":
+                                step_result = env.step(real_action, action_available=request.get("action_available", True))
+                            else:
+                                step_result = env.step(real_action)
                             env_step_ms = (time.perf_counter() - t_env_step0) * 1000.0
                             executed_action = np.array(
                                 step_result["executed_action"],
                                 dtype=np.float64,
                             )
+                            action_type = step_result.get("action_type", action_type)
                         else:
                             env_step_ms = 0.0
                             executed_action = real_action
@@ -205,6 +218,7 @@ async def _handle_environment_request(websocket):
                             "status": "success",
                             "action": executed_action.tolist(),
                             "action_type": action_type,
+                            "executed": step_result.get("executed", True) if (is_human or not sent_is_invalid) else False,
                         }
                     t_send0 = time.perf_counter()
                     await websocket.send(packer.pack(response))
@@ -296,6 +310,15 @@ async def _handle_environment_request(websocket):
         logger.debug(f"Connection closed: {websocket.remote_address}")
     except Exception as e:
         logger.error(f"Unexpected error in request handler: {e}", exc_info=True)
+    finally:
+        for env_id, env in list(_env_storage.items()):
+            if getattr(env, "_expo_close_on_disconnect", False):
+                try:
+                    env.close()
+                except Exception:
+                    logger.exception("Failed to close UR environment")
+                finally:
+                    del _env_storage[env_id]
 
 
 async def _run_client(

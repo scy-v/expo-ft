@@ -1,0 +1,18 @@
+# Standalone UR actor; install in client/.venv without DROID or ZED.
+numpy==1.26.4
+scipy>=1.11,<2
+pyyaml
+ml-collections
+tyro
+websockets==13.1
+ur-rtde==1.6.3
+pydhgripper==1.0.2
+pyserial==3.5
+crcmod==1.7
+pyrealsense2; sys_platform == 'linux' and platform_machine == 'x86_64'
+evdev; sys_platform == 'linux'
+python-xlib==0.33; sys_platform == 'linux'
+opencv-python==4.11.0.86
+av>=15,<19
+pillow
+matplotlib
