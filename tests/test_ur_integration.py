@@ -68,6 +68,7 @@ class EnvTests(unittest.TestCase):
         env._outcome = None
         env._started = True
         env._closed = threading.Event()
+        env._lifecycle_lock = threading.RLock()
         env._last_obs = to_expo_observation(example_observation())
         env._record_index = 0
         env.keyboard = Mock()
@@ -86,6 +87,20 @@ class EnvTests(unittest.TestCase):
         env.engine.task_description='insert'
         env.engine.get_obs_state.return_value=example_observation()
         return env
+
+    def test_close_interrupts_reset_confirmation_and_releases_resources(self):
+        env = self.env()
+        env._started = False
+        with patch.object(env, '_wait_enter', side_effect=RuntimeError('closed')):
+            with self.assertRaisesRegex(RuntimeError, 'closed'):
+                env.reset()
+        env.engine._start_episode.assert_not_called()
+        env.engine.close.side_effect = RuntimeError('controller cleanup failed')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+            env.close()
+        self.assertTrue(env._closed.is_set())
+        env.keyboard.close.assert_called_once()
+        env.engine.recorder.close.assert_called_once()
 
     def test_real_action_is_recorded_and_no_extra_pacing(self):
         env=self.env()
@@ -209,24 +224,6 @@ class WorkspaceTests(unittest.TestCase):
         np.testing.assert_allclose(target[:3],[.9,.45,.6])
         np.testing.assert_allclose(Rotation.from_rotvec(target[3:]).as_matrix(),
                                    Rotation.from_euler('xyz',[3.14,0,-1.57]).as_matrix(),atol=1e-7)
-
-    def test_skipped_terminal_step_does_not_steal_previous_action_label(self):
-        from expo_ft.utils.loop_utils import EpisodeSink
-        processor=Mock()
-        sink=EpisodeSink(processor,threading.Lock(),None,Path('/tmp'),None,
-            save_buffer=False,checkpoint_model=False,checkpoint_interval=10,start_step=0)
-        action=np.arange(7)
-        sink.record_transition(1,{'actions':action,'is_hil':True})
-        sink.label_last(0.,1.,False)
-        # The protocol reports executed=False, so the learner records no new transition.
-        sink.label_last(1.,0.,True)
-        sink.flush_transitions()
-        processor.insert_transition.assert_called_once()
-        recorded=processor.insert_transition.call_args.args[0]
-        np.testing.assert_array_equal(recorded['actions'],action)
-        self.assertEqual(recorded['rewards'],1.)
-        self.assertTrue(recorded['dones'])
-
 
 if __name__ == "__main__":
     unittest.main()

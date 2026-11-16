@@ -54,7 +54,12 @@ def make_train_config(*, lora=False, action_horizon=50):
         paligemma_variant="gemma_2b_lora" if lora else "gemma_2b",
         action_expert_variant="gemma_300m_lora" if lora else "gemma_300m",
     )
-    base = openpi_config.get_config("expo_pi05_droid_full_finetune_sft_cartesian_state")
+    # Optimization follows the online architecture, independently of the checkpoint source.
+    base_name = (
+        "expo_pi05_droid_lora_finetune_sft_cartesian_state"
+        if lora else "expo_pi05_droid_full_finetune_sft_cartesian_state"
+    )
+    base = openpi_config.get_config(base_name)
     return dataclasses.replace(
         base, name="expo_pi05_ur_lora" if lora else "expo_pi05_ur_full",
         model=model, data=UR5eDataConfig(), freeze_filter=model.get_freeze_filter(),

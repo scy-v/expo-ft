@@ -4,7 +4,7 @@ experiment:
 output_root: ./logs/ur-evaluation
 policy:
   location: remote
-  host: 127.0.0.1
+  host: 100.101.84.9
   bind_host: 0.0.0.0
   port: 8000
   cuda_visible_devices: '0'

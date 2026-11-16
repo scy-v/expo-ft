@@ -209,9 +209,7 @@ class _ContinuousForceController:
 
 
 def update_latest_symlink(target: Path, link_name: Path):
-    if link_name.exists() or link_name.is_symlink():
-        link_name.unlink()
-    os.symlink(target, link_name)
+    publish_latest(target, link_name)
 
 
 def resolve_model_path(value):

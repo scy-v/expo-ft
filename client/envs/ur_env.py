@@ -30,6 +30,7 @@ class UREnv:
         self.engine.recorder.retain_frames = False  # Online runs must not retain every frame in RAM.
         self.keyboard = None
         self._closed = threading.Event()
+        self._lifecycle_lock = threading.RLock()
         self.keys, self.teleop = EpisodeKeys(), KeyboardAction()
         self._outcome = None
         self._started = False
@@ -65,8 +66,11 @@ class UREnv:
         self.teleop.reset()
         self.keys.reset()
         self._outcome = None
-        self.engine._start_episode()
-        self._started = True
+        with self._lifecycle_lock:
+            if self._closed.is_set():
+                raise RuntimeError('UR environment closed during reset')
+            self.engine._start_episode()
+            self._started = True
         return self.get_observation()
 
     def _events(self):
@@ -136,8 +140,12 @@ class UREnv:
 
     def close(self):
         self._closed.set()
-        try:
-            self.engine.close()
-        finally:
-            if self.keyboard is not None:
-                self.keyboard.close()
+        with self._lifecycle_lock:
+            try:
+                self.engine.close()
+            finally:
+                try:
+                    if self.keyboard is not None:
+                        self.keyboard.close()
+                finally:
+                    self.engine.recorder.close()

@@ -104,6 +104,25 @@ def _get_human_override_action(task_config: Optional[Any] = None) -> tuple:
         return None, False
 
 
+async def _reset_ur_environment(env, websocket):
+    """Let WebSocket close handling run while reset waits for the physical keyboard."""
+    reset = asyncio.create_task(asyncio.to_thread(env.reset))
+    disconnected = asyncio.create_task(websocket.wait_closed())
+    try:
+        done, _ = await asyncio.wait((reset, disconnected), return_when=asyncio.FIRST_COMPLETED)
+        if disconnected in done:
+            await asyncio.to_thread(env.close)
+            await asyncio.gather(reset, return_exceptions=True)
+            raise ConnectionError("Learner disconnected during UR reset")
+        return await reset
+    finally:
+        disconnected.cancel()
+        await asyncio.gather(disconnected, return_exceptions=True)
+        if not reset.done():
+            await asyncio.to_thread(env.close)
+            await asyncio.gather(reset, return_exceptions=True)
+
+
 async def _handle_environment_request(websocket):
     """Serve environment operation requests over the dialed connection until it closes."""
     global _task_config, _env_create_counter
@@ -160,7 +179,10 @@ async def _handle_environment_request(websocket):
                     if env is None:
                         response = {"status": "error", "message": f"Environment {env_id} not found"}
                     else:
-                        obs = env.reset()
+                        if getattr(env, "_expo_close_on_disconnect", False):
+                            obs = await _reset_ur_environment(env, websocket)
+                        else:
+                            obs = env.reset()
                         response = {
                             "status": "success",
                             "observation": obs,
@@ -304,6 +326,10 @@ async def _handle_environment_request(websocket):
                     await websocket.send(packer.pack(response))
                 except websockets.exceptions.ConnectionClosed:
                     logger.debug("Connection closed while sending error response")
+                    break
+                # A failed UR operation must release the active force controller;
+                # continuing this session could execute against a broken observation/reset.
+                if any(getattr(env, "_expo_close_on_disconnect", False) for env in _env_storage.values()):
                     break
                 
     except websockets.exceptions.ConnectionClosed:

@@ -43,6 +43,7 @@ class Recorder:
     ):
         self.visualize = visualize
         self.save_logs = save_logs
+        self._closed = threading.Event()
         # log path
         self.log_path = log_path
         self.evaluation_path = evaluation_path
@@ -66,15 +67,20 @@ class Recorder:
         self._write_evaluation()
 
         # start threads
+        self._logger = None
         if self.save_logs:
-            threading.Thread(target=self._logger_thread, daemon=True).start()
-        threading.Thread(target=self._visualizer_thread, daemon=True).start()
+            self._logger = threading.Thread(target=self._logger_thread, daemon=True)
+            self._logger.start()
+        self._visualizer = threading.Thread(target=self._visualizer_thread, daemon=True)
+        self._visualizer.start()
 
     # ====================== Logger Thread ====================== #
     def _logger_thread(self):
         while True:
             data = self.queue_log.get()  # blocking
             try:
+                if data is None:
+                    return
                 with open(self.log_path, "a", encoding="utf-8") as f:
                     yaml.safe_dump(
                         data,
@@ -96,6 +102,8 @@ class Recorder:
         while True:
             try:
                 obs = self.queue_vis.get()
+                if obs is None:
+                    return
                 if "observation/right_wrist_image" in obs:
                     l_wrist, r_wrist, ext = map(
                         self.to_bgr,
@@ -326,7 +334,7 @@ class Recorder:
         data = self._make_actions_record(
             actions, infer_time, prompt, state=state, **extra
         )
-        if not self.save_logs:
+        if not self.save_logs or self._closed.is_set():
             return data
         try:
             self.queue_log.put_nowait(data)
@@ -494,7 +502,28 @@ class Recorder:
         Dual-arm observations instead use observation/exterior_image,
         observation/left_wrist_image, and observation/right_wrist_image.
         """
+        if self._closed.is_set():
+            return
         try:
             self.queue_vis.put_nowait(obs)
         except queue.Full:
             pass
+
+    def close(self):
+        """Drain action logs and release online-session threads before reconnecting."""
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        if self._logger is not None:
+            self.queue_log.put(None)
+        # Visualization may already have exited on 'q'; discard any queued frame.
+        try:
+            self.queue_vis.get_nowait()
+        except queue.Empty:
+            pass
+        self.queue_vis.put_nowait(None)
+        for thread in (self._logger, self._visualizer):
+            if thread is not None:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    raise RuntimeError("Recorder thread did not stop")

@@ -27,6 +27,7 @@ expo-setup/outputs/
 /checkpoints
 /assets
 /logs
+/client/.venv
 /expo-setup/uv-cache
 /expo-setup/python
 /expo-setup/outputs

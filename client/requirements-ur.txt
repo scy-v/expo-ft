@@ -1,4 +1,6 @@
 # Standalone UR actor; install in client/.venv without DROID or ZED.
+# Run installation/compilation from the repository root; use the pinned OpenPI checkout.
+-e expo_ft/agents/vla/openpi/packages/openpi-client
 numpy==1.26.4
 scipy>=1.11,<2
 pyyaml
