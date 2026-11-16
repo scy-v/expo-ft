@@ -32,7 +32,10 @@ class AsyncChunkSampler:
     the (rng-advanced) one, exactly like ``agent.sample_actions``.
     """
 
-    def __init__(self, agent, *, delay, replan_steps, sim_latency_ms=0.0, timer=None):
+    def __init__(self, agent, *, delay, replan_steps, sim_latency_ms=0.0, timer=None, fixed_policy=None):
+        self.fixed_policy = fixed_policy
+        if fixed_policy is not None and delay != 0:
+            raise ValueError("Fixed SFT rollout requires delay=0")
         self.delay = int(delay)
         self.replan_steps = int(replan_steps)
         self.sim_latency_ms = float(sim_latency_ms)
@@ -65,6 +68,11 @@ class AsyncChunkSampler:
 
     def sample(self, agent, observation, metrics):
         """Next chunk at a replan boundary. Returns ``(action_chunk, agent, sample_info)``."""
+        if self.fixed_policy is not None:
+            from expo_ft.utils.ur_rollout import sample_fixed_sft
+            actions, info = sample_fixed_sft(self.fixed_policy, observation)
+            self._simulate_latency()
+            return actions, agent, info
         if self.use_pre_cache:
             return self._sample_pre_cached(agent, observation, metrics)
         action_chunk, agent, sample_info = agent.sample_actions(observation)

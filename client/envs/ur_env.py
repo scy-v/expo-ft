@@ -34,6 +34,8 @@ class UREnv:
             if type(value) is not int or value <= 0:
                 raise ValueError(f'{name} must be a positive integer; got {value!r}')
         self.episode_action_limit = self.max_episode_chunks * replan_steps
+        from client.ur.progress import EpisodeProgress
+        self.progress = EpisodeProgress(self.max_episode_chunks, replan_steps)
         from client.ur.online_backend import OnlineInference
         from client.ur.keyboard_listener import KeyboardListener
         self.engine = OnlineInference(Path(ur_config_path))
@@ -84,6 +86,8 @@ class UREnv:
                 raise RuntimeError('UR environment closed during reset')
             self.engine._start_episode()
             self._started = True
+            if hasattr(self, "progress"):
+                self.progress.update(self.engine._ep_idx, 0)
         return self.get_observation()
 
     def _events(self):
@@ -103,6 +107,8 @@ class UREnv:
                 outcome = False
             if outcome is not None:
                 self._outcome = outcome
+                if hasattr(self, "progress"):
+                    self.progress.close()
                 self.engine._submit_episode('manual_success' if outcome else 'failure_or_timeout', outcome)
                 self.engine._ep_idx += 1
         return events
@@ -147,6 +153,8 @@ class UREnv:
         self.engine._send_force_action(actual)
         self.engine._gripper_position = float(actual[6])
         self.engine._ep_steps += 1
+        if hasattr(self, "progress"):
+            self.progress.update(self.engine._ep_idx, self.engine._ep_steps)
         self._record_index += 1
         self.engine.recorder.submit_actions(
             actual[None], self._record_index, self.engine.task_description,
@@ -161,6 +169,8 @@ class UREnv:
 
     def close(self):
         self._closed.set()
+        if hasattr(self, "progress"):
+            self.progress.close()
         with self._lifecycle_lock:
             try:
                 self.engine.close()

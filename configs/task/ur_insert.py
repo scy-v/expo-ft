@@ -8,6 +8,7 @@ def get_config():
     return ConfigDict(dict(
         env=UREnv, env_name='ur_insert', env_type='ur',
         ur_config_path='configs/ur/insert.yaml',
+        rollout_config_path='configs/ur/rollout.yaml',
         language_instruction='Insert the black rack into the blue slot',
         action_space='cartesian_delta', gripper_action_space='position',
         example_action=np.array([[0., 0., 0., 0., 0., 0., 1.]]),

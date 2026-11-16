@@ -49,7 +49,7 @@ class KeyboardAction:
 
 
 class EpisodeKeys:
-    """Edge-triggered success/failure labels; held-key repeat never ends an episode."""
+    """Online success labels only; Enter is reserved for reset/start confirmation."""
     def __init__(self, interval=0.5):
         self.interval = interval
         self.reset()
@@ -63,13 +63,12 @@ class EpisodeKeys:
             if key == 'Key.focus_lost':
                 self.first.clear()
                 continue
-            key = 'Key.enter' if key == 'Key.kpenter' else key
-            if key not in {'Key.enter', 'Key.space'}:
+            if key != 'Key.space':
                 continue
             previous = self.first.get(key)
             self.first[key] = stamp
             if previous is not None and 0 <= stamp - previous <= self.interval:
-                self.outcome = key == 'Key.space'
+                self.outcome = True
                 self.first.clear()
                 break
         return self.outcome

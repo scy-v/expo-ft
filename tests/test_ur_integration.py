@@ -56,7 +56,8 @@ class KeyboardTests(unittest.TestCase):
         self.assertTrue(keys.consume([('Key.space',2.2)]))
         keys.reset()
         self.assertIsNone(keys.consume([('Key.enter',3)]))
-        self.assertFalse(keys.consume([('Key.enter',3.3)]))
+        self.assertIsNone(keys.consume([('Key.enter',3.3)]))
+        self.assertIsNone(keys.consume([('Key.kpenter',3.4),('Key.kpenter',3.5)]))
         keys.reset()
         self.assertIsNone(keys.consume([('Key.enter',4),('Key.focus_lost',4.1),('Key.enter',4.2)]))
 
@@ -88,6 +89,17 @@ class EnvTests(unittest.TestCase):
         env.engine.task_description='insert'
         env.engine.get_obs_state.return_value=example_observation()
         return env
+
+    def test_online_double_enter_does_not_end_or_relabel_episode(self):
+        env = self.env()
+        env.keyboard.pop_pressed_events.return_value = [('Key.enter', 1), ('Key.enter', 1.2)]
+        env._events()
+        self.assertEqual(env.get_info_for_step(), (False, False, 0., 1.))
+        env.engine._submit_episode.assert_not_called()
+        env.keyboard.pop_pressed_events.return_value = [('Key.space', 2), ('Key.space', 2.2)]
+        env._events()
+        self.assertEqual(env.get_info_for_step(), (True, True, 1., 0.))
+        env.engine._submit_episode.assert_called_once()
 
     def test_chunk_budget_counts_executed_actions_not_time_or_polling(self):
         env = self.env()

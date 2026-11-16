@@ -87,6 +87,11 @@ for episode in conversion['episodes']:
         assert data['saved_observation/state'].shape == (episode['frames'], 19)
         assert data['action/cartesian_delta'].shape == (episode['frames'], 6)
         assert data['saved_observation/prompt'].asstr()[0] == task.language_instruction
+rollout = yaml.safe_load(Path(task.rollout_config_path).read_text())
+assert type(rollout['warmup']) is bool and type(rollout['sft_only']) is bool
+if rollout['sft_only']:
+    assert f.delay == 0
+report['rollout'] = rollout
 hardware = yaml.safe_load(Path(task.ur_config_path).read_text())
 assert hardware['robot']['action_fps'] == task.control_hz
 assert hardware['robot']['force_mode']['rtde_freq'] == 100

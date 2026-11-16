@@ -246,6 +246,10 @@ def main(_):
             logging.info("Resuming from step %d", start_step)
         batch_processor.restore(checkpoint_dir_path, up_to_step=latest_step)
 
+    from expo_ft.utils.ur_rollout import prepare_rollout
+    fixed_rollout_policy = prepare_rollout(
+        agent, FLAGS.config, FLAGS.config_task, FLAGS.replan_steps, FLAGS.delay, log_dir)
+
     # The env is created only now: EnvClientWrapper blocks until the rollout client
     # dials in, and the agent build above is the slow part.
     train_env_creation_request = {
@@ -303,7 +307,7 @@ def main(_):
     # Runs main-actor inference in the background while the robot executes the last `delay` actions.
     sampler = AsyncChunkSampler(
         _actor_agent, delay=FLAGS.delay, replan_steps=FLAGS.replan_steps,
-        sim_latency_ms=FLAGS.sim_latency, timer=timer,
+        sim_latency_ms=FLAGS.sim_latency, timer=timer, fixed_policy=fixed_rollout_policy,
     )
     # Buffer inserts, NFS buffer saves, wandb logs (both threads) and checkpoints queue here and flush at episode end.
     sink = EpisodeSink(
