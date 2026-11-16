@@ -8,7 +8,7 @@ import yaml
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=Path('configs/ur/insert.yaml'))
+    parser.add_argument('--config', type=Path, default=Path('configs/ur/insert_sft.yaml'))
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--check', action='store_true', help='Validate config and weight paths; never connect hardware')
     mode.add_argument('--check-model', action='store_true', help='Load actual weights and infer on synthetic observations; no hardware')

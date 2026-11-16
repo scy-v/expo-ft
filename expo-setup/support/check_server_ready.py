@@ -49,6 +49,24 @@ f = training.FLAGS
 cfg, task = f.config, f.config_task
 _, train, _, model_cls = build_pi05_config(cfg)
 assert model_cls == 'EXPOLearner' and cfg.pi05_config_name == 'expo_pi05_ur_lora'
+from configs.model.expo_ft_pi_config import get_config as author_agent_config
+from openpi.training import config as openpi_config
+reference = author_agent_config()
+for key, value in reference.items():
+    if not key.startswith('pi05_'):
+        assert cfg[key] == value, (key, cfg[key], value)
+author_train = openpi_config.get_config('expo_pi05_droid_lora_finetune_sft_cartesian_state')
+assert train.lr_schedule == author_train.lr_schedule
+assert train.optimizer == author_train.optimizer
+assert train.ema_decay == author_train.ema_decay
+assert train.model.paligemma_variant == 'gemma_2b_lora'
+assert train.model.action_expert_variant == 'gemma_300m_lora'
+assert train.model.action_dim == 32 and train.model.max_token_len == 200
+assert cfg.valids_keep_terminal_windows is False
+assert task.edit_action_xyzg is False
+report['author_algorithm_config_matches'] = True
+report['pi05_learning_rate'] = float(train.lr_schedule.create()(0))
+
 assert task.env_type == 'ur' and task.control_hz == 10
 assert train.model.action_horizon == 50 and f.replan_steps == 8 and f.delay == 0
 assert f.batch_size == 64 and f.utd_ratio == 20 and f.num_updates == 3
@@ -72,13 +90,25 @@ for episode in conversion['episodes']:
 hardware = yaml.safe_load(Path(task.ur_config_path).read_text())
 assert hardware['robot']['action_fps'] == task.control_hz
 assert hardware['robot']['force_mode']['rtde_freq'] == 100
+assert hardware['online']['max_episode_chunks'] == 60
+assert 'model' not in hardware and 'policy' not in hardware
+assert not {'num_episodes', 'episode_timeout_sec'} & hardware.get('record', {}).keys()
+assert hardware['task']['description'] == task.language_instruction
+assert 'auto_reset_steps' not in task
+report['episode_budget'] = dict(max_episode_chunks=60, replan_steps=f.replan_steps,
+                               executed_action_limit=60*f.replan_steps, wall_clock_timeout=False)
+report['yaml_scope'] = 'repository copy; not a live attestation of remote actor configuration'
 run = Path(f.output_dir)/f.run_name
 assert not run.exists(), f'Fresh-run output already exists: {run}; choose new name or explicit resume'
-for name in ['insert.yaml', 'insert_expo.yaml']:
+for name in ['insert_sft.yaml', 'insert_expo.yaml']:
     evaluation = yaml.safe_load((Path('configs/ur')/name).read_text())['model']
+    assert evaluation['action_horizon'] == train.model.action_horizon
+    assert evaluation['replan_steps'] == f.replan_steps
+    assert evaluation['kind'] == ('sft' if name == 'insert_sft.yaml' else 'expo')
+    assert evaluation['architecture'] == ('full' if name == 'insert_sft.yaml' else 'lora')
     assert Path(evaluation['norm_stats_path']).resolve() == stats.resolve()
-    assert Path(evaluation['run_config']).resolve() == (run/'ur_run.json').resolve()
     if name == 'insert_expo.yaml':
+        assert Path(evaluation['run_config']).resolve() == (run/'ur_run.json').resolve()
         assert Path(evaluation['checkpoint_dir']).resolve() == (run/'checkpoints').resolve()
 for folder in ['data', 'checkpoints', 'logs', 'expo-setup/uv-cache', 'expo-setup/outputs']:
     path = Path(folder).resolve()

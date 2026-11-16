@@ -1,21 +1,16 @@
+# Online UR actor only. Model and learning settings are in configs/model/expo_ft_ur_config.py.
 keyboard_terminal_only: false
 experiment:
   name: insert_black_rack_into_blue_slot
-output_root: ./logs/ur-evaluation
-policy:
-  location: remote
-  host: 100.101.84.9
-  bind_host: 0.0.0.0
-  port: 8000
-  cuda_visible_devices: '0'
+output_root: ./logs/ur-online
 task:
   description: Insert the black rack into the blue slot
 video:
   fps: 15
   visualize: true
-record:
-  num_episodes: 20
-  episode_timeout_sec: 60
+online:
+  max_episode_chunks: 60  # Action budget = chunks * learner replan_steps.
+record:  # Online action/timing logs; no evaluation episode count or timeout.
   action_timing_enabled: true
   save_logs: true
 robot:
@@ -101,15 +96,6 @@ cameras:
   fps: 15
   width: 640
   height: 480
-model:
-  kind: sft
-  architecture: full
-  checkpoint_dir: ./checkpoints/sft/ur_insert/2500
-  norm_stats_path: ./checkpoints/sft/ur_insert/2500/assets/scylearning/insert_black_rack_into_blue_slot_20260916_v01/norm_stats.json
-  action_horizon: 50
-  replan_steps: 8
-  sample_steps: 10
-  run_config: ./checkpoints/online_rl/run_001/ur_run.json
 online_workspace:
   lower:
   - 0.0

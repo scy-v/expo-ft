@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 
+import yaml
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -22,7 +23,13 @@ def to_expo_observation(obs):
 
 
 class UREnv:
-    def __init__(self, ur_config_path='configs/ur/insert.yaml', **kwargs):
+    def __init__(self, ur_config_path='configs/ur/insert.yaml', replan_steps=None, **kwargs):
+        config = yaml.safe_load(Path(ur_config_path).read_text())
+        self.max_episode_chunks = config['online']['max_episode_chunks']
+        for name, value in [('max_episode_chunks', self.max_episode_chunks), ('replan_steps', replan_steps)]:
+            if type(value) is not int or value <= 0:
+                raise ValueError(f'{name} must be a positive integer; got {value!r}')
+        self.episode_action_limit = self.max_episode_chunks * replan_steps
         from client.ur.online_backend import OnlineInference
         from client.ur.keyboard_listener import KeyboardListener
         self.engine = OnlineInference(Path(ur_config_path))
@@ -81,7 +88,7 @@ class UREnv:
         if self._outcome is None:
             self.keys.consume(events)
             outcome = self.keys.outcome
-            if outcome is None and time.perf_counter() - self.engine._ep_start >= self.engine.ep_timeout:
+            if outcome is None and self.engine._ep_steps >= self.episode_action_limit:
                 outcome = False
             if outcome is not None:
                 self._outcome = outcome

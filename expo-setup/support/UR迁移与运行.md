@@ -12,7 +12,7 @@
 
 - 状态：复位参考下的 EE 位姿 6、TCP 速度 6、力/力矩 6、实测夹爪开度 1；两路 RGB 图像，右腕为模型填充视角。
 - 动作：7 维，TCP 参考系的平移增量、Euler XYZ 旋转增量和夹爪开度；不能把 DROID 速度动作用于 UR。底层处理工具偏移、目标保持和阻抗；在线目标边界沿用 RLinf 的 UR workspace。
-- 全参 SFT 评估配置：`configs/ur/insert.yaml`。当前使用导入的 2500 步 JAX 权重（`checkpoints/sft/ur_insert/2500`）及其配套 norm stats，严格按 full 模型树加载。50 步预测长度来自已有任务配置，不由权重形状推断。
+- 全参 SFT 评估配置：`configs/ur/insert_sft.yaml`。当前使用导入的 2500 步 JAX 权重（`checkpoints/sft/ur_insert/2500`）及其配套 norm stats，严格按 full 模型树加载。50 步预测长度来自已有任务配置，不由权重形状推断。
 - 在线训练默认：`configs/model/expo_ft_ur_config.py`，全参 SFT 初始化双 LoRA Pi05，算法配置沿用 EXPO。全参在线可显式设 `--config.pi05_config_name=expo_pi05_ur_full`，尚未验证其显存与梯度运行。
 - 完整在线模型评估配置：`configs/ur/insert_expo.yaml`。恢复 EXPO 的 `agent` 和 `params`，包含 Pi05、edit actor、critic、目标网络等；不是只抽取 Pi05。需要对应运行自动生成的 `ur_run.json`，检查架构、预测/执行长度和 norm stats SHA256。该文件记录实际模型配置与源码指纹；新权重不能混用旧归一化。
 - 在线默认保持上游 10 条示教、offline_ratio=0、episode 更新 3 次及原训练门槛，不复制 RLT warmup、更新比例或关键阶段筛选。LeRobot 转换后数据路径显式传入；现已按 seed=0 随机转换 10 条到 `data/online_rl/success`，可由 `num_data=10` 全部读取；此前单条验证目录仍只含第 0 条，不用于替代这 10 条数据。

@@ -71,6 +71,7 @@ class EnvTests(unittest.TestCase):
         env._lifecycle_lock = threading.RLock()
         env._last_obs = to_expo_observation(example_observation())
         env._record_index = 0
+        env.episode_action_limit = 60 * 8
         env.keyboard = Mock()
         env.keyboard.pop_pressed_events.return_value=[]
         env.keyboard.get_pressed_keys.return_value=set()
@@ -87,6 +88,46 @@ class EnvTests(unittest.TestCase):
         env.engine.task_description='insert'
         env.engine.get_obs_state.return_value=example_observation()
         return env
+
+    def test_chunk_budget_counts_executed_actions_not_time_or_polling(self):
+        env = self.env()
+        env.engine._ep_start = time.perf_counter() - 3600
+        env.get_observation()
+        self.assertFalse(env.get_info_for_step()[0])
+        env.engine._ep_steps = 479
+        env.step(np.zeros(7), action_available=False)
+        self.assertEqual(env.engine._ep_steps, 479)
+        env.keyboard.get_pressed_keys.return_value = {'s'}
+        env.step(np.zeros(7), action_available=False)  # Human actions also consume budget.
+        self.assertEqual(env.engine._ep_steps, 480)
+        env.get_observation()
+        self.assertEqual(env.get_info_for_step(), (True, False, 0., 0.))
+        self.assertFalse(env.step(np.zeros(7))['executed'])
+        env.engine._submit_episode.assert_called_once()
+        env.engine._send_force_action.assert_called_once()
+        env.engine._start_episode.side_effect = lambda: setattr(env.engine, '_ep_steps', 0)
+        with patch.object(env, '_wait_enter'):
+            env.reset()
+        self.assertFalse(env.get_info_for_step()[0])
+        self.assertEqual(env.engine._ep_steps, 0)
+
+    def test_chunk_budget_uses_yaml_and_learner_execution_length(self):
+        config = yaml.safe_load(Path('configs/ur/insert.yaml').read_text())
+        self.assertEqual(config['online']['max_episode_chunks'], 60)
+        with patch('client.ur.online_backend.OnlineInference') as engine, patch('client.ur.keyboard_listener.KeyboardListener'):
+            env = UREnv(replan_steps=3)
+            self.assertEqual(env.episode_action_limit, 180)
+            env.close()
+        for value in [None, 0, -1, True, 8.5]:
+            with self.assertRaises(ValueError):
+                UREnv(replan_steps=value)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.yaml'
+            for value in [0, -1, True, 1.5]:
+                config['online']['max_episode_chunks'] = value
+                path.write_text(yaml.safe_dump(config))
+                with self.assertRaises(ValueError):
+                    UREnv(ur_config_path=path, replan_steps=8)
 
     def test_close_interrupts_reset_confirmation_and_releases_resources(self):
         env = self.env()
@@ -189,7 +230,7 @@ class ControlTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_default_config_and_actual_norm_stats(self):
-        cfg=yaml.safe_load(Path('configs/ur/insert.yaml').read_text())
+        cfg=yaml.safe_load(Path('configs/ur/insert_sft.yaml').read_text())
         validate_config(cfg,files=False)
         cfg['robot']['action_fps']=20
         with self.assertRaises(ValueError):validate_config(cfg,files=False)

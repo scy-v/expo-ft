@@ -11,5 +11,5 @@ def get_config():
         language_instruction='Insert the black rack into the blue slot',
         action_space='cartesian_delta', gripper_action_space='position',
         example_action=np.array([[0., 0., 0., 0., 0., 0., 1.]]),
-        control_hz=10, auto_reset_steps=600, edit_action_xyzg=False,
+        control_hz=10, edit_action_xyzg=False,
     ))

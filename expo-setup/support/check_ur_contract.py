@@ -15,7 +15,7 @@ from expo_ft.data.replay_buffer import create_replay_buffer
 from expo_ft.env.droid_utils import process_droid_dataset
 from expo_ft.utils.ur_run import write_run_config
 
-cfg=yaml.safe_load(Path('configs/ur/insert.yaml').read_text())
+cfg=yaml.safe_load(Path('configs/ur/insert_sft.yaml').read_text())
 stats=Path(cfg['model']['norm_stats_path'])
 model=get_config()
 model.pi05_assets_dir=str(stats.parent)

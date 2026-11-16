@@ -161,6 +161,8 @@ async def _handle_environment_request(websocket):
                     env_kwargs = dict(task_config)
                     env_kwargs["video_dir"] = request.get("video_dir") or ""
                     env_kwargs["env_usage"] = env_usage
+                    if task_config.env_type == "ur":
+                        env_kwargs["replan_steps"] = request.get("replan_steps")
                     env = task_config.env(**env_kwargs)
                     if task_config.env_type == "ur":
                         env._expo_close_on_disconnect = True

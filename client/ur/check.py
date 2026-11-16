@@ -38,9 +38,21 @@ def check_config(path):
     from .policy import validate_config
     from .keyboard_focus import validate_terminal_keyboard
     config = yaml.safe_load(Path(path).read_text())
-    validate_config(config, files=False)
+    if 'online' in config:
+        require('model' not in config and 'policy' not in config,
+                'Online actor config must not contain evaluation model/policy settings')
+        chunks = config['online']['max_episode_chunks']
+        require(type(chunks) is int and chunks > 0, 'online.max_episode_chunks must be a positive integer')
+        require(config['robot']['action_fps'] == 10, 'Expected 10 Hz actions')
+        force = config['robot']['force_mode']
+        require(force['rtde_freq'] == 100 and force['continuous_tracking'],
+                'Expected continuous 100 Hz UR force tracking')
+        require(not {'num_episodes', 'episode_timeout_sec'} & config.get('record', {}).keys(),
+                'Episode count and timeout belong in evaluation config')
+    else:
+        validate_config(config, files=False)
+        require(config['policy']['location'] == 'remote', 'Actor preflight requires policy.location=remote')
     validate_terminal_keyboard(config.get('keyboard_terminal_only', False))
-    require(config['policy']['location'] == 'remote', 'Actor preflight requires policy.location=remote')
     cameras = config['cameras']
     require(cameras['wrist_cam_serial'] != cameras['exterior_cam_serial'], 'Camera serials must be distinct')
     return config
@@ -151,7 +163,7 @@ def main(argv=None):
         checks.append(dict(name='config', status='fail', detail=str(exc)))
     else:
         checks.append(dict(name='config', status='pass', detail=dict(path=str(args.config),
-                      robot=config['robot'], cameras=config['cameras'], model=config['model'])))
+                      robot=config['robot'], cameras=config['cameras'], online=config.get('online'), model=config.get('model'))))
     def task_check():
         from client.run_client import load_task_config
         task = load_task_config(args.task_config)

@@ -263,11 +263,13 @@ class Inference:
         from types import SimpleNamespace
         robot = cfg["robot"]
         self.remote_policy = hardware_only or cfg["policy"].get("location") == "remote"
-        self.action_chunk = int(cfg["model"].get("replan_steps", 8))
+        # Online execution receives individual actions from the learner; it never loads a policy.
+        model = {} if hardware_only else cfg["model"]
+        self.action_chunk = 1 if hardware_only else int(model.get("replan_steps", 8))
         self.model_config = SimpleNamespace(openpi=SimpleNamespace(model_action_dim=32))
-        self.checkpoint_dir = Path(cfg["model"]["checkpoint_dir"]).expanduser()
-        self.sample_steps = int(cfg["model"].get("sample_steps", 10))
-        self.norm_stats_path = Path(cfg["model"]["norm_stats_path"]).expanduser()
+        self.checkpoint_dir = None if hardware_only else Path(model["checkpoint_dir"]).expanduser()
+        self.sample_steps = None if hardware_only else int(model.get("sample_steps", 10))
+        self.norm_stats_path = None if hardware_only else Path(model["norm_stats_path"]).expanduser()
         self.norm_stats = None
         if not self.remote_policy:
             from .policy import load_norm_stats
@@ -289,8 +291,8 @@ class Inference:
         self.video_fps = video.get("fps", 7)
         self.visualize = video["visualize"]
         record = cfg.get("record", {})
-        self.num_episodes = record.get("num_episodes", 10)
-        self.ep_timeout = record.get("episode_timeout_sec", 30)
+        self.num_episodes = None if hardware_only else record.get("num_episodes", 10)
+        self.ep_timeout = None if hardware_only else record.get("episode_timeout_sec", 30)
         self.action_timing_enabled = bool(record.get("action_timing_enabled", False))
         self.save_logs = bool(record.get("save_logs", True))
 
@@ -440,7 +442,7 @@ class Inference:
             display_fps=self.video_fps,
             visualize=self.visualize,
             save_logs=self.save_logs,
-            evaluation_path=(
+            evaluation_path=None if hardware_only else (
                 Path(cfg.get("output_root", "./results")).expanduser()
                 / "runs"
                 / f"{time_str}-ur5e-eval"
@@ -1713,6 +1715,13 @@ class Inference:
             logging.error(f"[ERROR] Failed to save videos: {e}")
 
     def run(self):
+        """Drain recording workers on every exit, after any requested video save."""
+        try:
+            self._run_evaluation()
+        finally:
+            self.recorder.close()
+
+    def _run_evaluation(self):
         """Main pipeline: connect robot, cameras, and run inference."""
         completed = False
         policy = None
@@ -1779,7 +1788,7 @@ def main():
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/ur/insert.yaml"),
+        default=Path("configs/ur/insert_sft.yaml"),
         help="Path to the VLA-Precision UR inference YAML config.",
     )
     args = parser.parse_args()

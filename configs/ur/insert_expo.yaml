@@ -1,3 +1,4 @@
+# Standalone EXPO evaluation; not used by online training.
 keyboard_terminal_only: false
 experiment:
   name: insert_black_rack_into_blue_slot
@@ -110,19 +111,3 @@ model:
   replan_steps: 8
   sample_steps: 10
   run_config: ./checkpoints/online_rl/run_001/ur_run.json
-online_workspace:
-  lower:
-  - 0.0
-  - -0.45
-  - 0.0
-  - -3.663598775598
-  - -0.523598775598
-  - -3.140796326795
-  upper:
-  - 0.9
-  - 0.45
-  - 0.6
-  - -2.616401224402
-  - 0.523598775598
-  - 0.000796326795
-online_gripper_threshold: 0.5

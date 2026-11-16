@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import av
 import numpy as np
@@ -74,9 +74,21 @@ class RemotePolicyTests(unittest.TestCase):
 
 class PreflightTests(unittest.TestCase):
     def test_remote_configs_do_not_require_local_weights(self):
-        for path in ['configs/ur/insert.yaml', 'configs/ur/insert_expo.yaml']:
+        for path in ['configs/ur/insert_sft.yaml', 'configs/ur/insert_expo.yaml']:
             with patch('client.ur.policy.load_norm_stats', side_effect=AssertionError('local weights accessed')):
                 self.assertEqual(check.check_config(path)['policy']['location'], 'remote')
+
+    def test_training_and_evaluation_configs_are_separate(self):
+        config = check.check_config('configs/ur/insert.yaml')
+        self.assertEqual(config['online']['max_episode_chunks'], 60)
+        for key in ('model', 'policy'):
+            self.assertNotIn(key, config)
+        for key in ('num_episodes', 'episode_timeout_sec'):
+            self.assertNotIn(key, config['record'])
+        for name in ('insert_sft.yaml', 'insert_expo.yaml'):
+            evaluation = check.check_config(Path('configs/ur') / name)
+            self.assertNotIn('online', evaluation)
+            self.assertEqual(evaluation['record']['num_episodes'], 20)
 
     def test_invalid_config_and_missing_camera_are_reported_as_failures(self):
         config = yaml.safe_load(Path('configs/ur/insert.yaml').read_text())
@@ -111,6 +123,24 @@ class LogPathTests(unittest.TestCase):
 
 
 class RecorderLifecycleTests(unittest.TestCase):
+    def test_evaluation_closes_recorder_after_normal_and_failed_run(self):
+        from client.ur.ur import Inference
+        for error in (None, RuntimeError('evaluation failed'), KeyboardInterrupt()):
+            with self.subTest(error=error):
+                engine = Inference.__new__(Inference)
+                engine.recorder = Mock()
+                def evaluate():
+                    engine.recorder.close.assert_not_called()
+                    if error is not None:
+                        raise error
+                engine._run_evaluation = evaluate
+                if error is None:
+                    engine.run()
+                else:
+                    with self.assertRaises(type(error)):
+                        engine.run()
+                engine.recorder.close.assert_called_once()
+
     def test_online_initialization_uses_hardware_config_without_local_weights(self):
         from contextlib import ExitStack
         from client.envs.ur_env import UREnv
@@ -125,7 +155,7 @@ class RecorderLifecycleTests(unittest.TestCase):
                 patches.enter_context(patch.object(OnlineInference, method))
             patches.enter_context(patch('client.ur.keyboard_listener.KeyboardListener'))
             patches.enter_context(patch('client.ur.robot_lifecycle.register_robot_cleanup'))
-            env = UREnv(ur_config_path=path)
+            env = UREnv(ur_config_path=path, replan_steps=8)
             try:
                 self.assertTrue(env.engine.remote_policy)
                 self.assertIsNone(env.engine.norm_stats)

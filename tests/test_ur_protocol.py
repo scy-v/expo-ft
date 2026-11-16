@@ -17,6 +17,7 @@ from client.envs.ur_env import to_expo_observation
 class FakeUR:
     instances=[]
     def __init__(self, **kwargs):
+        self.replan_steps = kwargs.get("replan_steps")
         self.closed=False
         self.terminal=False
         self.instances.append(self)
@@ -193,7 +194,8 @@ class LoopbackTests(unittest.TestCase):
             thread=threading.Thread(target=target,daemon=True)
             thread.start()
             try:
-                env_id,prompt=learner.create_env({'env_usage':'train'})
+                env_id,prompt=learner.create_env({'env_usage':'train', 'replan_steps':3})
+                self.assertEqual(FakeUR.instances[-1].replan_steps, 3)
                 learner.reset(env_id)
                 action,kind=learner.step(env_id,np.zeros(7))
                 self.assertEqual(kind,'human')

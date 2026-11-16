@@ -10,7 +10,7 @@ import yaml
 from client.ur.policy import URPolicy
 faulthandler.dump_traceback_later(60)
 started=time.monotonic()
-config=yaml.safe_load(Path('configs/ur/insert.yaml').read_text())
+config=yaml.safe_load(Path('configs/ur/insert_sft.yaml').read_text())
 policy=URPolicy(config)
 faulthandler.cancel_dump_traceback_later()
 print(f'PASS CPU evaluation loader, actual checkpoint, {time.monotonic()-started:.1f}s; forward not run',flush=True)
