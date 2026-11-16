@@ -8,7 +8,7 @@ import yaml
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from client.ur.keyboard import EpisodeKeys, KeyboardAction
+from client.ur.keyboard import EpisodeKeys, KeyboardAction, CheckpointKeys
 
 
 def to_expo_observation(obs):
@@ -25,6 +25,10 @@ def to_expo_observation(obs):
 class UREnv:
     def __init__(self, ur_config_path='configs/ur/insert.yaml', replan_steps=None, **kwargs):
         config = yaml.safe_load(Path(ur_config_path).read_text())
+        self.manual_checkpoint = config['online'].get('manual_checkpoint', True)
+        if type(self.manual_checkpoint) is not bool:
+            raise ValueError('online.manual_checkpoint must be a YAML boolean')
+        self.checkpoint_keys = CheckpointKeys()
         self.max_episode_chunks = config['online']['max_episode_chunks']
         for name, value in [('max_episode_chunks', self.max_episode_chunks), ('replan_steps', replan_steps)]:
             if type(value) is not int or value <= 0:
@@ -72,6 +76,8 @@ class UREnv:
         self._wait_enter('UR reset complete. Press Enter to start the episode.')
         self.teleop.reset()
         self.keys.reset()
+        if hasattr(self, "checkpoint_keys"):
+            self.checkpoint_keys.reset()
         self._outcome = None
         with self._lifecycle_lock:
             if self._closed.is_set():
@@ -82,6 +88,11 @@ class UREnv:
 
     def _events(self):
         events = self.keyboard.pop_pressed_events()
+        if self._started and self._outcome is None and hasattr(self, 'checkpoint_keys'):
+            was_requested = self.checkpoint_keys.requested
+            self.checkpoint_keys.consume(events)
+            if self.manual_checkpoint and self.checkpoint_keys.requested and not was_requested:
+                logging.info('Checkpoint requested: save after this episode ends.')
         for key, _ in events:
             if key == 'Key.slash':
                 self.teleop.mode = 1 - self.teleop.mode
@@ -102,6 +113,9 @@ class UREnv:
         self._last_obs = to_expo_observation(raw)
         self.engine.recorder.submit_obs(raw)
         return self._last_obs
+
+    def get_checkpoint_control(self):
+        return {'manual': self.manual_checkpoint, 'requested': self.checkpoint_keys.requested}
 
     def get_info_for_step(self):
         # The network wrapper attaches these labels to the same observation.

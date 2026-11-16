@@ -280,6 +280,8 @@ async def _handle_environment_request(websocket):
                             "reward": float(reward),
                             "mask": float(mask),
                         }
+                        if hasattr(env, 'get_checkpoint_control'):
+                            response['checkpoint_control'] = env.get_checkpoint_control()
                     await websocket.send(packer.pack(response))
 
                 elif operation == "get_info_for_step":

@@ -9,6 +9,7 @@ video:
   fps: 15
   visualize: true
 online:
+  manual_checkpoint: true  # Double-tap minus within 0.5s; save at episode end only.
   max_episode_chunks: 60  # Action budget = chunks * learner replan_steps.
 record:  # Online action/timing logs; no evaluation episode count or timeout.
   action_timing_enabled: true

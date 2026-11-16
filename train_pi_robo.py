@@ -331,6 +331,7 @@ def main(_):
 
         with timer.context("obs"):
             observation = env.get_observation()
+            sink.set_checkpoint_control(getattr(env, "checkpoint_control", None))
             
         # Observation history for the replan_steps < delay fallback (no-op otherwise).
         sampler.observe(observation)
@@ -451,7 +452,7 @@ def main(_):
 
     sink.flush_all()
 
-    if FLAGS.checkpoint_model:
+    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
         try:
             save_checkpoint(checkpoint_manager, agent, FLAGS.max_steps)
             logging.info(f"Saved final agent checkpoint at step {FLAGS.max_steps}")

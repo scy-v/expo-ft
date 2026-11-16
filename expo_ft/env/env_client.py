@@ -180,6 +180,7 @@ class EnvClient:
     def get_observation(self, env_id: str) -> dict:
         """Get the observation of the environment."""
         response = self._call_operation("get_observation", {"env_id": env_id})
+        self.checkpoint_control = response.get("checkpoint_control")
         # Termination/detection is piggybacked on the obs response (server computes it on
         # the same frame). Cache it so get_info_for_step needs no separate round-trip.
         if "done" in response:
@@ -218,6 +219,10 @@ class EnvClientWrapper:
         self.client = EnvClient(host=host, port=port)
         self.env_id, self.task_description = self.client.create_env(env_creation_request)
         self.env_creation_request = env_creation_request
+
+    @property
+    def checkpoint_control(self):
+        return getattr(self.client, 'checkpoint_control', None)
 
     def _call(self, op_name: str, thunk):
         """Run an op; if the server returns an error, recreate env + reset, then retry."""

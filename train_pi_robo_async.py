@@ -419,6 +419,7 @@ def main(_):
 
         with timer.context("obs"):
             observation = env.get_observation()
+            sink.set_checkpoint_control(getattr(env, "checkpoint_control", None))
 
         # Observation history for the replan_steps < delay fallback (no-op otherwise).
         sampler.observe(observation)
@@ -527,7 +528,7 @@ def main(_):
 
     sink.flush_all()
 
-    if FLAGS.checkpoint_model:
+    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
         _ckpt_done.clear()
         _ckpt_request[0] = FLAGS.max_steps
     _stop_event.set()
@@ -535,7 +536,7 @@ def main(_):
     _episode_done.set()
     _update_thread.join()
 
-    if FLAGS.checkpoint_model:
+    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
         logging.info("Waiting for checkpoint manager to finish")
         checkpoint_manager.wait_until_finished()
 

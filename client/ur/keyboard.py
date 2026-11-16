@@ -73,3 +73,25 @@ class EpisodeKeys:
                 self.first.clear()
                 break
         return self.outcome
+
+
+class CheckpointKeys:
+    """Latch one save request per episode from two distinct minus press edges."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.first = None
+        self.requested = False
+
+    def consume(self, events):
+        for key, stamp in events:
+            if key == 'Key.focus_lost':
+                self.first = None
+            elif key in {'Key.minus', 'Key.kpminus', '-'}:
+                if self.first is not None and 0 <= stamp - self.first <= 0.5:
+                    self.requested = True
+                    self.first = None
+                else:
+                    self.first = stamp
+        return self.requested

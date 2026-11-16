@@ -170,6 +170,8 @@ class EpisodeSink:
         self.save_buffer = save_buffer
         self.checkpoint_model = checkpoint_model
         self.checkpoint_interval = checkpoint_interval
+        self.manual_checkpoint = False
+        self.checkpoint_requested = False
         self.last_ckpt_step = start_step
         self._transitions = []  # (step, transition)
         self._disk_saves = []
@@ -208,14 +210,24 @@ class EpisodeSink:
         self._flush_disk_saves()
         self._flush_logs()
 
+    def set_checkpoint_control(self, control):
+        if control is None:
+            return
+        if not isinstance(control, dict) or type(control.get('manual')) is not bool or type(control.get('requested')) is not bool:
+            raise ValueError('Invalid checkpoint control metadata')
+        self.manual_checkpoint = control['manual']
+        self.checkpoint_requested = control['requested']
+
     def maybe_save_checkpoint(self, step, agent):
         # Press Enter in this terminal to force a checkpoint at the next episode end,
         # regardless of checkpoint_model / checkpoint_interval. select() on a non-tty
         # stdin (/dev/null under sbatch) always reports readable, hence the isatty guard.
-        forced = sys.stdin.isatty() and bool(select.select([sys.stdin], [], [], 0)[0])
-        if forced:
+        if self.manual_checkpoint and not self.checkpoint_requested:
+            return
+        forced = self.manual_checkpoint or (sys.stdin.isatty() and bool(select.select([sys.stdin], [], [], 0)[0]))
+        if forced and not self.manual_checkpoint:
             sys.stdin.readline()
-        else:
+        elif not forced:
             if not self.checkpoint_model or self.checkpoint_interval <= 0:
                 return
             if step - self.last_ckpt_step < self.checkpoint_interval:
@@ -223,8 +235,9 @@ class EpisodeSink:
         try:
             self.save_checkpoint_fn(self.checkpoint_manager, agent, step)
             self.checkpoint_manager.wait_until_finished()
+            self.checkpoint_requested = False
             self.last_ckpt_step = step
-            logging.info("Saved agent checkpoint at step %d%s", step, " (forced via Enter)" if forced else "")
+            logging.info("Saved agent checkpoint at step %d%s", step, " (keyboard request)" if forced else "")
         except Exception as e:
             logging.error("Could not save model checkpoint: %s", e)
 

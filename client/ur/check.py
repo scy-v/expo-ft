@@ -41,6 +41,8 @@ def check_config(path):
     if 'online' in config:
         require('model' not in config and 'policy' not in config,
                 'Online actor config must not contain evaluation model/policy settings')
+        require(type(config['online'].get('manual_checkpoint', True)) is bool,
+                'online.manual_checkpoint must be a YAML boolean')
         chunks = config['online']['max_episode_chunks']
         require(type(chunks) is int and chunks > 0, 'online.max_episode_chunks must be a positive integer')
         require(config['robot']['action_fps'] == 10, 'Expected 10 Hz actions')
