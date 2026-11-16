@@ -2,4 +2,4 @@
 warmup: true
 # Diagnostic mode: fixed full SFT policy, no EXPO residual actor or critic selection.
 # Learner updates and replay collection continue normally; this is not standard EXPO rollout.
-sft_only: true
+sft_only: false
