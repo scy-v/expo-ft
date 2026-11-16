@@ -72,6 +72,7 @@ class EnvTests(unittest.TestCase):
         env._lifecycle_lock = threading.RLock()
         env._last_obs = to_expo_observation(example_observation())
         env._record_index = 0
+        env.reset_control = dict(hz=1000., position_step=0.045, rotation_step=0.075)
         env.episode_action_limit = 60 * 8
         env.keyboard = Mock()
         env.keyboard.pop_pressed_events.return_value=[]
@@ -118,10 +119,59 @@ class EnvTests(unittest.TestCase):
         env.engine._submit_episode.assert_called_once()
         env.engine._send_force_action.assert_called_once()
         env.engine._start_episode.side_effect = lambda: setattr(env.engine, '_ep_steps', 0)
-        with patch.object(env, '_wait_enter'):
+        with patch.object(env, '_wait_enter'), patch.object(env, '_manual_reset'):
             env.reset()
         self.assertFalse(env.get_info_for_step()[0])
         self.assertEqual(env.engine._ep_steps, 0)
+
+    def test_manual_reset_keyboard_motion_is_not_recorded(self):
+        env = self.env()
+        env._outcome = True
+        env.engine._ep_steps = 480
+        # Entry drains old events and suppresses held keys until released.
+        env.keyboard.pop_pressed_events.side_effect = [[], [], [], [], [('Key.right', time.time()+1)], []]
+        env.keyboard.get_pressed_keys.side_effect = [{'s'}, {'s'}, set(), {'s', 'l'}]
+        env._manual_reset()
+        actions = [call.args[0] for call in env.engine._send_force_action.call_args_list]
+        np.testing.assert_array_equal(actions[0], [0, 0, 0, 0, 0, 0, 1])
+        self.assertAlmostEqual(actions[-1][0], 0.045)
+        self.assertEqual(actions[-1][-1], 0.)
+        self.assertEqual(env.engine._ep_steps, 480)
+        self.assertEqual(env._record_index, 0)
+        self.assertTrue(env._outcome)
+        env.engine.recorder.submit_actions.assert_not_called()
+        env.engine._start_episode.assert_not_called()
+        env.engine.reset_episode.assert_not_called()
+        env.engine.start_reset_control.assert_called_once()
+        env.engine.stop_force.assert_called_once()
+
+    def test_reset_orders_manual_phase_before_homing_except_first_start(self):
+        for first in (True, False):
+            env = self.env()
+            env._started = not first
+            events = []
+            env.engine.reset_episode.side_effect = lambda: events.append('home')
+            with patch.object(env, '_wait_enter', side_effect=lambda _: events.append('enter')), \
+                 patch.object(env, '_manual_reset', side_effect=lambda: events.append('manual')):
+                env.reset()
+            self.assertEqual(events, ['enter', 'home', 'enter'] if first else ['enter', 'manual', 'home', 'enter'])
+
+    def test_manual_reset_error_stops_force_and_does_not_home(self):
+        env = self.env()
+        env.keyboard.pop_pressed_events.return_value = []
+        env.engine._send_force_action.side_effect = RuntimeError('controller failed')
+        with patch.object(env, '_wait_enter'), self.assertRaisesRegex(RuntimeError, 'controller failed'):
+            env.reset()
+        env.engine.stop_force.assert_called()
+        env.engine.reset_episode.assert_not_called()
+
+    def test_manual_reset_close_prevents_homing(self):
+        env = self.env()
+        env.engine._send_force_action.side_effect = lambda _: env.close()
+        with patch.object(env, '_wait_enter'), self.assertRaisesRegex(RuntimeError, 'closed'):
+            env.reset()
+        env.engine.reset_episode.assert_not_called()
+        env.engine.close.assert_called_once()
 
     def test_chunk_budget_uses_yaml_and_learner_execution_length(self):
         config = yaml.safe_load(Path('configs/ur/insert.yaml').read_text())

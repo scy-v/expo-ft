@@ -1,10 +1,19 @@
 """Shared UR hardware with RLinf's online target bounds and EXPO-owned pacing."""
 import numpy as np
 from scipy.spatial.transform import Rotation
-from .ur import Inference
+from .ur import Inference, _ContinuousForceController
 
 
 class OnlineInference(Inference):
+    def start_reset_control(self):
+        """Start keyboard control without opening or counting a rollout episode."""
+        self._clear_action_idle_hold()
+        self._zero_force_lock_active = False
+        if self.continuous_tracking and not self.debug:
+            if self._force_controller is None:
+                self._force_controller = _ContinuousForceController(self)
+            self._force_controller.start()
+
     def __init__(self, path):
         super().__init__(path, hardware_only=True)
         self.externally_paced = True

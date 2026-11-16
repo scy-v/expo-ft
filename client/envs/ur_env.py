@@ -25,6 +25,12 @@ def to_expo_observation(obs):
 class UREnv:
     def __init__(self, ur_config_path='configs/ur/insert.yaml', replan_steps=None, **kwargs):
         config = yaml.safe_load(Path(ur_config_path).read_text())
+        self.reset_control = config['online'].get('reset_teleop', {})
+        for name, default in [('hz', 10.0), ('position_step', 0.045), ('rotation_step', 0.075)]:
+            value = self.reset_control.get(name, default)
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not np.isfinite(value) or value <= 0:
+                raise ValueError(f'online.reset_teleop.{name} must be finite and positive')
+            self.reset_control[name] = float(value)
         self.manual_checkpoint = config['online'].get('manual_checkpoint', True)
         if type(self.manual_checkpoint) is not bool:
             raise ValueError('online.manual_checkpoint must be a YAML boolean')
@@ -70,11 +76,65 @@ class UREnv:
             self._closed.wait(0.02)
         raise RuntimeError('UR environment closed while waiting for confirmation')
 
+    def _manual_reset(self):
+        """Unrecorded keyboard phase, adapted from RECAP's manual_reset loop."""
+        settings = self.reset_control
+        teleop = KeyboardAction(position=(settings['position_step'],) * 2,
+                               rotation=(settings['rotation_step'],) * 2)
+        teleop.gripper = float(self.engine._gripper_position)
+        cutoff = time.time()
+        self.keyboard.pop_pressed_events()
+        blocked = set(self.keyboard.get_pressed_keys())
+        logging.info('Manual reset: use movement keys and l/o for gripper; press Right arrow to return home. No rollout data is recorded.')
+        try:
+            with self._lifecycle_lock:
+                if self._closed.is_set():
+                    raise RuntimeError('UR environment closed during manual reset')
+                self.engine.start_reset_control()
+            while not self._closed.is_set():
+                tick = time.monotonic()
+                events = self.keyboard.pop_pressed_events()
+                if any(k == 'Key.right' and t >= cutoff for k, t in events):
+                    return
+                held = set(self.keyboard.get_pressed_keys())
+                if any(k == 'Key.focus_lost' for k, _ in events):
+                    blocked.update(held)
+                    held = set()
+                else:
+                    blocked.intersection_update(held)
+                    held -= blocked
+                with self._lifecycle_lock:
+                    if self._closed.is_set():
+                        break
+                    ee = self.engine.get_ee_pose()
+                    action, _ = teleop.action(
+                        held, [], np.r_[np.zeros(6), teleop.gripper],
+                        ee_rotation=Rotation.from_rotvec(ee[3:]),
+                        reference_frame=self.engine.reference_frame,
+                        selection=self.engine.select_vector,
+                        control_euler=self.engine.control_frame_euler_deg,
+                    )
+                    self.engine._send_force_action(action)
+                    self.engine._gripper_position = float(action[6])
+                self._closed.wait(max(0, 1 / settings['hz'] - (time.monotonic() - tick)))
+            raise RuntimeError('UR environment closed during manual reset')
+        finally:
+            with self._lifecycle_lock:
+                if not self._closed.is_set():
+                    self.engine.stop_force()
+            self.keyboard.pop_pressed_events()
+
     def reset(self):
+        self.engine.stop_force()
         if not self._started:
             self._wait_enter('Press Enter to permit the first UR reset.')
-        self.engine.stop_force()
-        self.engine.reset_episode()
+        else:
+            self._wait_enter('Episode finished. Press Enter to enable keyboard manual reset.')
+            self._manual_reset()
+        with self._lifecycle_lock:
+            if self._closed.is_set():
+                raise RuntimeError('UR environment closed before automatic reset')
+            self.engine.reset_episode()
         self._wait_enter('UR reset complete. Press Enter to start the episode.')
         self.teleop.reset()
         self.keys.reset()

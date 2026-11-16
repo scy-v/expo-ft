@@ -28,5 +28,14 @@
       "rlinf/envs/real/cartesian.py:_clip_position_to_safety_box",
       "rlinf/envs/real/utils/pose.py:clip_euler_to_target_window"
     ]
+  },
+  "reset_flow_source": {
+    "repository": "/home/suchenyu/RLinf-recap",
+    "commit": "571135466d04439b3772cdb203798016c35f216a",
+    "files": [
+      "toolkits/ur_data_collection/run_rollout.py",
+      "toolkits/ur_data_collection/rollout_loop.py:manual_reset"
+    ],
+    "adaptation": "Independent unrecorded keyboard reset phase in client/envs/ur_env.py; EXPO 10Hz pacing, existing UR controller and keyboard frame mapping; explicit Right-arrow completion without timeout homing."
   }
 }
