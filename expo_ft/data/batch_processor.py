@@ -90,7 +90,7 @@ class BatchProcessor:
         restore_replay_buffer(checkpoint_dir, self.replay_buffer, up_to_step=up_to_step)
         self.replay_buffer.restore_success_marks()
 
-    def next_batch(self, combine_rng):
+    def next_batch(self, combine_rng, *, to_device=True):
         """Return (critic_batch, actor_batch, new_rng) for one update step."""
         if self.use_dagger_hil_sampling or self.offline_ratio == 0:
             batch = next(self.replay_iterator)
@@ -103,25 +103,27 @@ class BatchProcessor:
             clear_batch(online_batch)
             clear_batch(offline_batch)
 
-        batch = self.replay_buffer.apply_data_sharding(batch, self.data_sharding)
-
         actor_batch = None
         if self.use_dagger_hil_sampling:
             actor_batch = next(self.hil_iterator)
-            actor_batch = self.replay_buffer.apply_data_sharding(actor_batch, self.data_sharding)
         elif self.actor_success_only:
             actor_batch = self._sample_success_actor_batch(new_rng)
             if actor_batch is not None:
                 new_rng_parts = jax.random.split(new_rng)
                 new_rng = new_rng_parts[0]
-                actor_batch = self.replay_buffer.apply_data_sharding(
-                    actor_batch, self.data_sharding
-                )
-
+        if to_device:
+            batch, actor_batch = self.to_device(batch, actor_batch)
         return batch, actor_batch, new_rng
 
+    def to_device(self, batch, actor_batch):
+        """Upload only the batch being consumed, already split across devices."""
+        batch = self.replay_buffer.apply_data_sharding(batch, self.data_sharding)
+        if actor_batch is not None:
+            actor_batch = self.replay_buffer.apply_data_sharding(actor_batch, self.data_sharding)
+        return batch, actor_batch
+
     def _sample_buffer(self, buffer, batch_size, **sample_kwargs):
-        raw = buffer.sample_jax(batch_size, **sample_kwargs)
+        raw = buffer.sample_jax(batch_size, host=True, **sample_kwargs)
         if raw is None:
             return None
         return buffer._convert_to_openpi_format(raw)

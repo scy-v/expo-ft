@@ -19,7 +19,7 @@
 
 ## 在线预热与固定 SFT 对照
 
-服务器 `configs/ur/rollout.yaml` 默认 `warmup=true`、`sft_only=true`。预热在连接机器人之前完成，输出动作丢弃；不会把首次梯度编译也提前执行。`sft_only=true` 额外加载固定全参 SFT Pi05，使用在线相同的观测/动作/键盘/节拍链路，跳过 EXPO edit actor 和 critic 的动作选择，learner 仍照常更新；不等价于正式 EXPO rollout 或完整 EXPO 推理性能。命令与输出说明见[训练命令](../训练命令.md)。
+服务器 `configs/ur/rollout.yaml` 默认 `warmup=true`、`warmup_update=true`、`sft_only=false`。预热在连接机器人之前完成，输出动作丢弃；更新预热只提前编译正式更新函数，不执行梯度或改变训练／采样状态。`sft_only=true` 额外加载固定全参 SFT Pi05，使用在线相同的观测/动作/键盘/节拍链路，跳过 EXPO edit actor 和 critic 的动作选择，learner 仍照常更新；不等价于正式 EXPO rollout 或完整 EXPO 推理性能。命令与输出说明见[训练命令](../训练命令.md)。
 
 默认同步入口的更新与推理共用服务器 agent，episode 更新后下一次采样直接使用新参数，不向本地 UR 客户端发送权重。异步入口每次更新发布推理缓存，rollout 循环拾取缓存；固定 SFT 诊断不使用这些更新。控制频率仍为动作10Hz、forceMode100Hz，同步 chunk 间推理等待仍存在。
 

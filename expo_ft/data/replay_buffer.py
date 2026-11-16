@@ -436,7 +436,7 @@ class PiReplayBuffer(Dataset):
         return _take_rows(arr, indices, out=out)
 
     def sample_jax(self, batch_size: int, keys=None, data_sharding=None,
-                       hil_only: bool = False, success_only: bool = False):
+                       hil_only: bool = False, success_only: bool = False, host: bool = False):
         n_step = self._replan_steps  # critic reward window: one executed chunk
         assert len(self) >= n_step, "Replay buffer size must be greater than the sample window"
         if not hasattr(self, "rng"):
@@ -551,6 +551,15 @@ class PiReplayBuffer(Dataset):
                 except (TypeError, ValueError):
                     return x
         
+        if host:
+            # Gather staging is reused by the next sample. Prefetch must own its
+            # host arrays, including shared next/next_delayed observations.
+            copies = {}
+            def own(x):
+                if id(x) not in copies:
+                    copies[id(x)] = np.array(x, copy=True)
+                return copies[id(x)]
+            return jax.tree.map(own, jax_dataset_dict)
         jax_dataset_dict = to_jax_array(jax_dataset_dict)
         # Host staging is reused next call: don't let it change under an in-flight copy.
         jax.block_until_ready(jax_dataset_dict)
@@ -562,6 +571,7 @@ class PiReplayBuffer(Dataset):
         cams = self._gather_camera_keys
         prefixes = ["", "next_", "next_delayed_"]
 
+        normalized = {}
         for prefix in prefixes:
             img_key = f"{prefix}image"
             openpi_batch[img_key] = {}
@@ -570,7 +580,10 @@ class PiReplayBuffer(Dataset):
                 st = _critic_key_to_storage(cam)
                 img = openpi_batch.pop(f"{prefix}{st}")
                 if img.dtype == np.uint8:
-                    img = img.astype(np.float32) / 255.0 * 2.0 - 1.0
+                    identity = id(img)
+                    if identity not in normalized:
+                        normalized[identity] = img.astype(np.float32) / 255.0 * 2.0 - 1.0
+                    img = normalized[identity]
                 openpi_batch[img_key][cam] = img
                 openpi_batch[f"{img_key}_mask"][cam] = openpi_batch.pop(f"{prefix}{st}_mask")
         return openpi_batch
@@ -596,6 +609,7 @@ class PiReplayBuffer(Dataset):
         def enqueue(n):
             for _ in range(n):
                 sample_kwargs = dict(sample_args)
+                sample_kwargs['host'] = True
                 if 'data_sharding' not in sample_kwargs:
                     sample_kwargs['data_sharding'] = data_sharding
                 batch = self.sample_jax(**sample_kwargs)

@@ -482,7 +482,9 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
         """
         s = self.actor.infer_sharding
         return self.replace(_infer_cache={
-            "actor_train_state": jax.device_put(self.actor_train_state, s),
+            # Sampling only reads model_def/params, not optimizer or EMA state.
+            "actor_train_state": jax.device_put(
+                self.actor_train_state.replace(opt_state=(), ema_params=None), s),
             "batch_encoder_params": jax.device_put(self.batch_encoder.params, s),
             "edit_actor_params": jax.device_put(self.edit_actor.params, s),
             "target_critic_params": jax.device_put(self.target_critic.params, s),

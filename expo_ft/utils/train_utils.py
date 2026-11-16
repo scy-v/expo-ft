@@ -198,6 +198,8 @@ def _concat_leaves(x, y):
         return y
     if y is None:
         return x
+    if isinstance(x, np.ndarray) and isinstance(y, np.ndarray):
+        return np.concatenate([x, y], axis=0)
     return jnp.concatenate([jnp.asarray(x), jnp.asarray(y)], axis=0)
 
 
@@ -206,7 +208,8 @@ def _shuffle_batch(key, batch):
     leaves, treedef = jax.tree_util.tree_flatten(batch)
     n = leaves[0].shape[0]
     perm = jax.random.permutation(key, n)
-    shuffled = [jnp.asarray(x)[perm] for x in leaves]
+    host_perm = np.asarray(perm)
+    shuffled = [x[host_perm] if isinstance(x, np.ndarray) else jnp.asarray(x)[perm] for x in leaves]
     return jax.tree_util.tree_unflatten(treedef, shuffled)
 
 

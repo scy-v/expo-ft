@@ -221,6 +221,8 @@ def main(_):
         edit_action_xyzg=FLAGS.config_task.edit_action_xyzg,
     )
 
+    # The agent owns these states now; don't pin initialization copies across updates.
+    del actor_train_state, target_actor_params
     start_step = 0
     if resuming:
         agent = restore_checkpoint(checkpoint_manager, agent)
@@ -233,9 +235,11 @@ def main(_):
             logging.info("Resuming from step %d", start_step)
         batch_processor.restore(checkpoint_dir_path, up_to_step=latest_step)
 
-    from expo_ft.utils.ur_rollout import prepare_rollout
+    from expo_ft.utils.ur_rollout import prepare_rollout, prepare_update
     fixed_rollout_policy = prepare_rollout(
         agent, FLAGS.config, FLAGS.config_task, FLAGS.replan_steps, FLAGS.delay, log_dir)
+    update_executable = prepare_update(
+        agent, batch_processor, FLAGS.config_task, FLAGS.utd_ratio, replicated_sharding)
 
     # The env is created only now: EnvClientWrapper blocks until the rollout client
     # dials in, and the agent build above is the slow part.
@@ -285,7 +289,7 @@ def main(_):
 
     def _fetch(rng):
         with buffer_lock:
-            return batch_processor.next_batch(rng)
+            return batch_processor.next_batch(rng, to_device=False)
 
     def run_agent_updates(num_updates: int, metrics: dict):
         nonlocal agent, combine_rng, pending_batch
@@ -297,9 +301,12 @@ def main(_):
             batch, actor_batch, combine_rng = pending_batch.result()
             # Kick off the next gather now so it overlaps this update.
             pending_batch = prefetch_pool.submit(_fetch, combine_rng)
+            batch, actor_batch = batch_processor.to_device(batch, actor_batch)
             metrics["batch_info"] = get_batch_info(batch)
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
             agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
+            # Report completed device work, and surface asynchronous OOM here.
+            jax.block_until_ready((agent, update_info))
             training_log.record_update_time(time.time() - update_start, metrics)
             for k, v in update_info.items():
                 metrics[f"training/{k}"] = v

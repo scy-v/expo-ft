@@ -236,6 +236,8 @@ def main(_):
         edit_action_xyzg=FLAGS.config_task.edit_action_xyzg,
     )
 
+    # The agent owns these states now; don't pin initialization copies across updates.
+    del actor_train_state, target_actor_params
     start_step = 0
     if resuming:
         agent = restore_checkpoint(checkpoint_manager, agent)
@@ -246,9 +248,11 @@ def main(_):
             logging.info("Resuming from step %d", start_step)
         batch_processor.restore(checkpoint_dir_path, up_to_step=latest_step)
 
-    from expo_ft.utils.ur_rollout import prepare_rollout
+    from expo_ft.utils.ur_rollout import prepare_rollout, prepare_update
     fixed_rollout_policy = prepare_rollout(
         agent, FLAGS.config, FLAGS.config_task, FLAGS.replan_steps, FLAGS.delay, log_dir)
+    update_executable = prepare_update(
+        agent, batch_processor, FLAGS.config_task, FLAGS.utd_ratio, replicated_sharding)
 
     # The env is created only now: EnvClientWrapper blocks until the rollout client
     # dials in, and the agent build above is the slow part.
@@ -351,6 +355,7 @@ def main(_):
                 learner_agent, update_info = learner_agent.update(
                     learner_agent, batch, FLAGS.utd_ratio, actor_batch
                 )
+                jax.block_until_ready((learner_agent, update_info))
 
                 with _publish_lock:
                     _published[0] = learner_agent._infer_cache

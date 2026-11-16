@@ -1,5 +1,6 @@
 # Server rollout controls; learner hyperparameters remain in configs/model/.
 warmup: true
+warmup_update: true  # Compile training before robot connection; do not apply gradients.
 # Diagnostic mode: fixed full SFT policy, no EXPO residual actor or critic selection.
 # Learner updates and replay collection continue normally; this is not standard EXPO rollout.
 sft_only: false

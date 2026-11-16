@@ -9,6 +9,81 @@ import numpy as np
 import yaml
 
 
+def prepare_update(agent, processor, task, utd_ratio, replicated_sharding):
+    """Compile the actual update signature, without executing or changing state."""
+    if task.env_type != 'ur':
+        return None
+    settings = yaml.safe_load(Path(task.rollout_config_path).read_text())
+    enabled = settings.get('warmup_update', True)
+    if type(enabled) is not bool:
+        raise ValueError('rollout warmup_update must be a YAML boolean')
+    if not enabled:
+        return None
+    from expo_ft.data.batch_processor import BatchProcessor
+    # Separate iterators: warmup must not consume the live prefetch sequence.
+    buffers = (processor.replay_buffer, processor.offline_replay_buffer)
+    previous = [(b, hasattr(b, 'rng'), getattr(b, 'rng', None)) for b in buffers]
+    logging.info('Compiling learner update before robot connection (no parameter updates)...')
+    start = time.perf_counter()
+    try:
+        probe = BatchProcessor(
+            processor.replay_buffer, processor.offline_replay_buffer,
+            processor.data_sharding, processor.batch_size, processor.utd_ratio,
+            processor.offline_ratio, processor.actor_success_only,
+            processor.use_dagger_hil_sampling,
+        )
+        batch, actor_batch, _ = probe.next_batch(jax.random.PRNGKey(0))
+        clean = agent.replace(_infer_cache=None, rng=jax.device_put(agent.rng, replicated_sharding))
+        # AOT lowering reconstructs TrainState with JAX ArgInfo placeholders;
+        # OpenPI's runtime array checks don't accept those metadata objects.
+        from openpi.shared import array_typing as at
+        previous_check = at.config.jaxtyping_disable
+        try:
+            at.config.update('jaxtyping_disable', True)
+            def signature(tree):
+                leaves, structure = jax.tree.flatten(tree)
+                return structure, tuple(
+                    (jax.core.get_aval(x).shape, jax.core.get_aval(x).dtype,
+                     jax.core.get_aval(x).weak_type, getattr(x, 'sharding', None))
+                    for x in leaves)
+
+            executables = []
+            current = clean
+            # E.g. the temperature and Adam moments lose weak typing over the
+            # first two updates. Follow abstract outputs to a stable signature.
+            for _ in range(4):
+                logging.info('Compiling learner update signature %d...', len(executables) + 1)
+                executable = type(clean)._update_jit.lower(
+                    current, current, batch, utd_ratio, actor_batch).compile()
+                executables.append(executable)
+                abstract, _ = jax.eval_shape(
+                    lambda a, b, c: type(a)._update_jit(a, a, b, utd_ratio, c),
+                    current, batch, actor_batch)
+                steady = jax.tree.map(
+                    lambda a, s: jax.ShapeDtypeStruct(a.shape, a.dtype,
+                        weak_type=a.weak_type, sharding=s),
+                    abstract, executable.output_shardings[0])
+                steady = steady.replace(rng=jax.ShapeDtypeStruct(
+                    steady.rng.shape, steady.rng.dtype, sharding=replicated_sharding))
+                if signature(current) == signature(steady):
+                    break
+                current = steady
+            else:
+                raise RuntimeError('Update signature did not stabilize during compile-only warmup')
+
+        finally:
+            at.config.update('jaxtyping_disable', previous_check)
+    finally:
+        for b, existed, rng in previous:
+            if existed:
+                b.rng = rng
+            elif hasattr(b, 'rng'):
+                del b.rng
+    logging.info('Learner update compilation finished in %.2fs; parameters, optimizer and sampling RNG unchanged.',
+                 time.perf_counter() - start)
+    return tuple(executables)
+
+
 def prepare_rollout(agent, config, task, replan_steps, delay, output_dir):
     if task.env_type != 'ur':
         return None
