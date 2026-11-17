@@ -52,4 +52,14 @@ class UpdateProgressTests(unittest.TestCase):
                       bar_format=BAR_FORMAT) as bar:
                 bar.set_postfix_str('updates=12 run=23.5s last=57.2s')
                 self.assertLessEqual(len(str(bar)), width)
-                self.assertIn('updates=12', str(bar))
+                self.assertIn('step 957/100001 [', str(bar))
+                if width >= 80:
+                    self.assertIn('updates=12 run=23.5s', str(bar))
+
+    def test_elapsed_remaining_and_rate_are_preserved(self):
+        from tqdm import tqdm
+        rendered = tqdm.format_meter(
+            n=100, total=1000, elapsed=20, rate=5, ncols=120,
+            bar_format=BAR_FORMAT, postfix='updates=2 run=12.3s last=58.1s')
+        self.assertIn('[00:20<03:00,  5.00it/s]', rendered)
+        self.assertIn('updates=2 run=12.3s last=58.1s', rendered)

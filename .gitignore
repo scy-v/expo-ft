@@ -39,3 +39,6 @@ expo-setup/outputs/
 *.safetensors
 *.hdf5
 *.parquet
+
+# Extracted run metrics are local evidence, not source files.
+expo-setup/figures/**/plot_data.json

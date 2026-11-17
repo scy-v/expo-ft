@@ -5,7 +5,7 @@ import time
 
 # A zero-width bar keeps tqdm's ncols clipping active (without {bar}, tqdm
 # returns an unbounded string even when dynamic_ncols=True).
-BAR_FORMAT = 'step {n_fmt}/{total_fmt} | {postfix}{bar:0}'
+BAR_FORMAT = 'step {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] | {postfix}{bar:0}'
 
 
 class UpdateProgress:
