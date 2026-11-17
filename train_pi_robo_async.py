@@ -113,7 +113,8 @@ def main(_):
         np.array(update_devices).reshape(num_update // FLAGS.fsdp_devices, FLAGS.fsdp_devices),
         (openpi_sharding.BATCH_AXIS, openpi_sharding.FSDP_AXIS),
     )
-    logging.info("Device layout: sampling on %s, updates on %s", sample_device, update_devices)
+    logging.info("Device layout: CUDA_VISIBLE_DEVICES=%s; sampling on logical %s, updates on logical %s",
+                 os.environ.get("CUDA_VISIBLE_DEVICES", "all"), sample_device, update_devices)
 
     data_sharding = jax.sharding.NamedSharding(
         mesh, jax.sharding.PartitionSpec(openpi_sharding.DATA_AXIS)
@@ -295,18 +296,46 @@ def main(_):
     _can_update = threading.Event()
     _episode_done = threading.Event()
     _update_count = [0]
+    _worker_error = [None]
+
+    def _raise_worker_error():
+        if _worker_error[0] is not None:
+            raise RuntimeError("Asynchronous learner failed; stopping rollout") from _worker_error[0]
+
+    env.abort_check = _raise_worker_error
+    env.client.abort_check = _raise_worker_error
     _ckpt_request = [None]  # main thread sets step number; update thread saves and clears
     _ckpt_done = threading.Event()
+    _ckpt_error = [None]
 
     def _save_from_update_thread(_manager, _agent, step):
         """Checkpoints hold the learner's train states, which only the update thread has."""
         if not _can_update.is_set():
             save_checkpoint(checkpoint_manager, agent, step)  # no update has run yet
             return
+        if not _update_thread.is_alive():
+            raise RuntimeError("Update thread is not running; checkpoint was not saved")
+        _ckpt_error[0] = None
         _ckpt_done.clear()
         _ckpt_request[0] = step
         if not _ckpt_done.wait(timeout=600):
             raise RuntimeError("update thread did not save the checkpoint in time")
+        if _ckpt_error[0] is not None:
+            raise RuntimeError("Learner checkpoint save failed") from _ckpt_error[0]
+
+    def _save_pending_checkpoint(learner_agent):
+        step = _ckpt_request[0]
+        if step is None:
+            return
+        _ckpt_request[0] = None
+        try:
+            save_checkpoint(checkpoint_manager, learner_agent, step)
+            checkpoint_manager.wait_until_finished()
+        except Exception as error:
+            _ckpt_error[0] = error
+            logging.exception("Could not save learner checkpoint at step %d", step)
+        finally:
+            _ckpt_done.set()
 
     # Runs main-actor inference in the background while the robot executes the last `delay` actions.
     sampler = AsyncChunkSampler(
@@ -331,10 +360,16 @@ def main(_):
         _can_update.wait()
         while not _stop_event.is_set():
             try:
+                _save_pending_checkpoint(learner_agent)
                 if FLAGS.ep_timeout_secs > 0 and time.time() - last_episode_time > FLAGS.ep_timeout_secs:
                     logging.info("No episode finished for %.1fs, pausing updates.", FLAGS.ep_timeout_secs)
                     sink.record_log(_env_step[0], {"training/update_paused": 1})
-                    _episode_done.wait()
+                    while not _episode_done.wait(timeout=0.1):
+                        _save_pending_checkpoint(learner_agent)
+                        if _stop_event.is_set():
+                            break
+                    if _stop_event.is_set():
+                        break
                     _episode_done.clear()
                     last_episode_time = time.time()
                     logging.info("Episode signal received, resuming updates.")
@@ -369,28 +404,20 @@ def main(_):
                     log_dict["training/update_time_avg_ms"] = float(np.mean(update_time)) * 1000.0
                 sink.record_log(_env_step[0], log_dict)
 
-                ckpt_step = _ckpt_request[0]
-                if ckpt_step is not None:
-                    _ckpt_request[0] = None
-                    try:
-                        save_checkpoint(checkpoint_manager, learner_agent, ckpt_step)
-                        checkpoint_manager.wait_until_finished()
-                    except Exception as e:
-                        logging.error("Could not save model checkpoint: %s", e)
-                    _ckpt_done.set()
-            except Exception:
-                logging.exception("Update thread crashed at update %d", _update_count[0])
+                _save_pending_checkpoint(learner_agent)
+            except Exception as error:
+                _worker_error[0] = error
+                _stop_event.set()
+                logging.exception("Update thread crashed at update %d; stopping rollout", _update_count[0])
+                # Wake blocked robot RPC/reset and let the client's disconnect
+                # cleanup stop the controller. abort_check prevents recovery.
+                try:
+                    env.client.close()
+                except Exception:
+                    logging.exception("Could not close robot connection after learner failure")
                 break
-        # Handle checkpoint request after stop signal
-        ckpt_step = _ckpt_request[0]
-        if ckpt_step is not None:
-            _ckpt_request[0] = None
-            try:
-                save_checkpoint(checkpoint_manager, learner_agent, ckpt_step)
-                logging.info("Saved agent checkpoint at step %d (from update thread)", ckpt_step)
-            except Exception as e:
-                logging.error("Could not save checkpoint: %s", e)
-            _ckpt_done.set()
+        # Handle checkpoint request after stop signal, using the latest learner state.
+        _save_pending_checkpoint(learner_agent)
         logging.info("Update thread exiting (updates=%d).", _update_count[0])
 
     _update_thread = threading.Thread(target=_update_worker, daemon=True)
@@ -410,147 +437,163 @@ def main(_):
     action_type = "policy"
     first_step_of_episode = True
 
-    for i in tqdm.tqdm(
-        range(start_step, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
-    ):
-        step_metrics = {}
-        timer.reset()
-        timer.tick("loop_time")
-        timer.tick("total")
-        _env_step[0] = i
+    try:
+        for i in tqdm.tqdm(
+            range(start_step, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
+        ):
+            _raise_worker_error()
+            step_metrics = {}
+            timer.reset()
+            timer.tick("loop_time")
+            timer.tick("total")
+            _env_step[0] = i
 
-        # Pick up the learner's newest params; an in-flight chunk keeps the ones it started with.
-        with _publish_lock:
-            new_cache = _published[0]
-            _published[0] = None
-        if new_cache is not None:
-            _actor_agent = _actor_agent.replace(_infer_cache=new_cache)
+            # Pick up the learner's newest params; an in-flight chunk keeps the ones it started with.
+            with _publish_lock:
+                new_cache = _published[0]
+                _published[0] = None
+            if new_cache is not None:
+                _actor_agent = _actor_agent.replace(_infer_cache=new_cache)
 
-        with timer.context("obs"):
-            observation = env.get_observation()
-            sink.set_checkpoint_control(getattr(env, "checkpoint_control", None))
+            with timer.context("obs"):
+                observation = env.get_observation()
+                sink.set_checkpoint_control(getattr(env, "checkpoint_control", None))
 
-        # Observation history for the replan_steps < delay fallback (no-op otherwise).
-        sampler.observe(observation)
-        with timer.context("info"):
-            done, success, reward, mask = env.get_info_for_step()
-        sink.label_last(reward, mask, done)  # outcome of the previous action
+            # Observation history for the replan_steps < delay fallback (no-op otherwise).
+            sampler.observe(observation)
+            with timer.context("info"):
+                done, success, reward, mask = env.get_info_for_step()
+            sink.label_last(reward, mask, done)  # outcome of the previous action
 
-        if not done:
-            # Start the next chunk's inference once exactly `delay` actions remain in the plan.
-            sampler.launch(_actor_agent, observation, len(action_plan), action_type)
+            if not done:
+                # Start the next chunk's inference once exactly `delay` actions remain in the plan.
+                sampler.launch(_actor_agent, observation, len(action_plan), action_type)
 
-            with timer.context("plan"):
-                # Skip model inference while human is controlling.
-                if not action_plan and action_type != "human":
-                    sample_start = time.time()
-                    action_chunk, _actor_agent, sample_info = sampler.sample(_actor_agent, observation, step_metrics)
-                    episode_log.sample_info_history.append(sample_info)
-                    action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
-                    training_log.record_sample_time(time.time() - sample_start, step_metrics)
-                    action_plan.extend(action_chunk)
-                    # Re-check with the refilled plan (covers delay == replan_steps).
-                    sampler.launch(_actor_agent, observation, len(action_plan), action_type)
-                else:
-                    episode_log.sample_info_history.append(
-                        episode_log.sample_info_history[-1] if episode_log.sample_info_history else None
-                    )
+                with timer.context("plan"):
+                    # Skip model inference while human is controlling.
+                    if not action_plan and action_type != "human":
+                        sample_start = time.time()
+                        action_chunk, _actor_agent, sample_info = sampler.sample(_actor_agent, observation, step_metrics)
+                        episode_log.sample_info_history.append(sample_info)
+                        action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
+                        training_log.record_sample_time(time.time() - sample_start, step_metrics)
+                        action_plan.extend(action_chunk)
+                        # Re-check with the refilled plan (covers delay == replan_steps).
+                        sampler.launch(_actor_agent, observation, len(action_plan), action_type)
+                    else:
+                        episode_log.sample_info_history.append(
+                            episode_log.sample_info_history[-1] if episode_log.sample_info_history else None
+                        )
 
-            # Pacing is anchored to the previous step's dispatch time, not its return, so latency does not accumulate.
-            sleep_left = 0.0 if last_control_start is None else dt - (time.time() - last_control_start)
-            step_metrics["timing/sleep_left_ms"] = sleep_left * 1000.0
-            with timer.context("wait"):
-                if sleep_left > 0:
-                    time.sleep(sleep_left)
+                # Pacing is anchored to the previous step's dispatch time, not its return, so latency does not accumulate.
+                sleep_left = 0.0 if last_control_start is None else dt - (time.time() - last_control_start)
+                step_metrics["timing/sleep_left_ms"] = sleep_left * 1000.0
+                with timer.context("wait"):
+                    if sleep_left > 0:
+                        time.sleep(sleep_left)
 
-            has_action = bool(action_plan)
-            action = action_plan.popleft() if has_action else np.zeros_like(example_action.squeeze())
+                has_action = bool(action_plan)
+                action = action_plan.popleft() if has_action else np.zeros_like(example_action.squeeze())
 
-            with timer.context("act"):
-                last_control_start = time.time()
-                real_action, action_type = env.step(action.tolist(), action_available=has_action)
+                with timer.context("act"):
+                    last_control_start = time.time()
+                    real_action, action_type = env.step(action.tolist(), action_available=has_action)
 
-        # Wire time of this step's env RPCs, as measured by the client wrapper.
-        step_metrics["timing/network_ms"] = env.pop_network_ms()
-        timer.tock("total")
-        timer.tick("post_step")
-        if not done:
-            episode_log.record_step(observation, len(action_plan), action_type, real_action, reward)
-        else:
-            # Preserve the preceding action's terminal reward without adding a new step.
-            episode_log.ep_return += reward
+            # Wire time of this step's env RPCs, as measured by the client wrapper.
+            step_metrics["timing/network_ms"] = env.pop_network_ms()
+            timer.tock("total")
+            timer.tick("post_step")
+            if not done:
+                episode_log.record_step(observation, len(action_plan), action_type, real_action, reward)
+            else:
+                # Preserve the preceding action's terminal reward without adding a new step.
+                episode_log.ep_return += reward
 
-        # A human override discards the plan and any in-flight inference.
-        if not done and action_type == "human":
-            action_plan.clear()
-            sampler.on_human_takeover()
+            # A human override discards the plan and any in-flight inference.
+            if not done and action_type == "human":
+                action_plan.clear()
+                sampler.on_human_takeover()
 
-        if not done and (has_action or action_type == "human") and env.last_step_executed:
-            transition = dict(
-                observations=observation,
-                actions=real_action,
-                is_hil=(action_type == "human"),
-            )
-            # Queued only; the buffer insert happens at episode end.
-            sink.record_transition(i, transition)
+            if not done and (has_action or action_type == "human") and env.last_step_executed:
+                transition = dict(
+                    observations=observation,
+                    actions=real_action,
+                    is_hil=(action_type == "human"),
+                )
+                # Queued only; the buffer insert happens at episode end.
+                sink.record_transition(i, transition)
 
-        log_timing = not done and not first_step_of_episode
-        first_step_of_episode = done  # next iteration starts a new episode if this one ended
-        if done:
-            # Reset starts now; the bookkeeping below runs while the robot homes.
-            pending_reset = reset_executor.submit(env.reset)
-            sink.flush_transitions()
-            with buffer_lock:
-                batch_processor.on_episode_done(success)
-            _episode_done.set()
-            last_control_start = None
-            sampler.on_episode_end()
+            log_timing = not done and not first_step_of_episode
+            first_step_of_episode = done  # next iteration starts a new episode if this one ended
+            if done:
+                # Reset starts now; the bookkeeping below runs while the robot homes.
+                pending_reset = reset_executor.submit(env.reset)
+                sink.flush_transitions()
+                with buffer_lock:
+                    batch_processor.on_episode_done(success)
+                _episode_done.set()
+                last_control_start = None
+                sampler.on_episode_end()
 
-            training_log.on_episode_done(episode_log, success, step_metrics)
-            episode_log.reset()
-            with buffer_lock:
-                batch_processor.on_episode_start()
+                training_log.on_episode_done(episode_log, success, step_metrics)
+                episode_log.reset()
+                with buffer_lock:
+                    batch_processor.on_episode_start()
 
-            # Drain queued inserts, NFS saves and logs; interval checkpoint if due.
-            sink.flush_episode(i, _actor_agent)
+                # Drain queued inserts, NFS saves and logs; interval checkpoint if due.
+                sink.flush_episode(i, _actor_agent)
 
-            # Updates start once a batch fits; compiling is slow, so do not wait for more episodes.
-            if not _can_update.is_set() and replay_buffer._size >= FLAGS.batch_size:
-                _can_update.set()
-                logging.info("Replay buffer ready (ep_count=%d), starting update thread.", training_log.ep_count)
+                # Updates start once a batch fits; compiling is slow, so do not wait for more episodes.
+                if not _can_update.is_set() and replay_buffer._size >= FLAGS.batch_size:
+                    _can_update.set()
+                    logging.info("Replay buffer ready (ep_count=%d), starting update thread.", training_log.ep_count)
 
-            pending_reset.result()  # re-raises reset failures on the main thread
-            env.pop_network_ms()  # discard the reset round-trip so it doesn't inflate the next step
-            done = False
-            action_type = "policy"
-            action_plan.clear()
+                pending_reset.result()  # re-raises reset failures on the main thread
+                env.pop_network_ms()  # discard the reset round-trip so it doesn't inflate the next step
+                done = False
+                action_type = "policy"
+                action_plan.clear()
 
-        timer.tock("post_step")
-        timer.tock("loop_time")
-        step_metrics.update({f"timing/{k}_ms": v for k, v in timer.get_times_ms().items()})
+            timer.tock("post_step")
+            timer.tock("loop_time")
+            step_metrics.update({f"timing/{k}_ms": v for k, v in timer.get_times_ms().items()})
 
-        if not log_timing:
-            step_metrics = {k: v for k, v in step_metrics.items()
-                            if not k.startswith("timing/")}
-        training_log.maybe_add_success_rate(i, step_metrics)
-        sink.record_log(i, step_metrics)
+            if not log_timing:
+                step_metrics = {k: v for k, v in step_metrics.items()
+                                if not k.startswith("timing/")}
+            training_log.maybe_add_success_rate(i, step_metrics)
+            sink.record_log(i, step_metrics)
 
-    sink.flush_all()
+        sink.flush_all()
 
-    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
-        _ckpt_done.clear()
-        _ckpt_request[0] = FLAGS.max_steps
-    _stop_event.set()
-    _can_update.set()
-    _episode_done.set()
-    _update_thread.join()
+        if FLAGS.checkpoint_model and sink.last_saved_step != FLAGS.max_steps:
+            try:
+                _save_from_update_thread(checkpoint_manager, _actor_agent, FLAGS.max_steps)
+            except Exception:
+                logging.exception("Could not save final learner checkpoint")
+        _stop_event.set()
+        _can_update.set()
+        _episode_done.set()
+        _update_thread.join()
+        _raise_worker_error()
 
-    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
-        logging.info("Waiting for checkpoint manager to finish")
-        checkpoint_manager.wait_until_finished()
+        if FLAGS.checkpoint_model and sink.last_saved_step != FLAGS.max_steps:
+            logging.info("Waiting for checkpoint manager to finish")
+            checkpoint_manager.wait_until_finished()
 
-    sampler.close()
-    reset_executor.shutdown(wait=True)
+        sampler.close()
+        reset_executor.shutdown(wait=True)
+
+    except BaseException:
+        _stop_event.set()
+        _can_update.set()
+        _episode_done.set()
+        try:
+            env.client.close()
+        finally:
+            sampler.close()
+            reset_executor.shutdown(wait=False, cancel_futures=True)
+        raise
 
 
 if __name__ == "__main__":

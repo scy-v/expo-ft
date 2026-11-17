@@ -13,7 +13,7 @@ online:
     hz: 10
     position_step: 0.045
     rotation_step: 0.075
-  manual_checkpoint: true  # Double-tap minus within 0.5s; save at episode end only.
+  manual_checkpoint: true  # Enable extra episode-end saves on double-minus; interval saves remain enabled.
   max_episode_chunks: 60  # Action budget = chunks * learner replan_steps.
 record:  # Online action/timing logs; no evaluation episode count or timeout.
   action_timing_enabled: true

@@ -181,6 +181,9 @@ class EpisodeSink:
         self.manual_checkpoint = False
         self.checkpoint_requested = False
         self.last_ckpt_step = start_step
+        self.last_saved_step = None
+        self.next_interval_step = ((start_step // checkpoint_interval + 1) * checkpoint_interval
+                                   if checkpoint_interval > 0 else None)
         self._transitions = []  # (step, transition)
         self._disk_saves = []
         self._logs = []         # (step, metrics)
@@ -227,24 +230,27 @@ class EpisodeSink:
         self.checkpoint_requested = control['requested']
 
     def maybe_save_checkpoint(self, step, agent):
-        # Press Enter in this terminal to force a checkpoint at the next episode end,
-        # regardless of checkpoint_model / checkpoint_interval. select() on a non-tty
-        # stdin (/dev/null under sbatch) always reports readable, hence the isatty guard.
-        if self.manual_checkpoint and not self.checkpoint_requested:
-            return
-        forced = self.manual_checkpoint or (sys.stdin.isatty() and bool(select.select([sys.stdin], [], [], 0)[0]))
-        if forced and not self.manual_checkpoint:
+        # Keyboard saves supplement the fixed interval; neither shifts its schedule.
+        keyboard = self.manual_checkpoint and self.checkpoint_requested
+        terminal = sys.stdin.isatty() and bool(select.select([sys.stdin], [], [], 0)[0])
+        if terminal:
             sys.stdin.readline()
-        elif not forced:
-            if not self.checkpoint_model or self.checkpoint_interval <= 0:
-                return
-            if step - self.last_ckpt_step < self.checkpoint_interval:
-                return
+        forced = keyboard or terminal
+        interval_due = (self.checkpoint_model and self.next_interval_step is not None
+                        and step >= self.next_interval_step)
+        if not forced and not interval_due:
+            return
+        if self.last_saved_step == step:
+            self.checkpoint_requested = False
+            return
         try:
             self.save_checkpoint_fn(self.checkpoint_manager, agent, step)
             self.checkpoint_manager.wait_until_finished()
             self.checkpoint_requested = False
             self.last_ckpt_step = step
+            self.last_saved_step = step
+            if interval_due:
+                self.next_interval_step = (step // self.checkpoint_interval + 1) * self.checkpoint_interval
             logging.info("Saved agent checkpoint at step %d%s", step, " (keyboard request)" if forced else "")
         except Exception as e:
             logging.error("Could not save model checkpoint: %s", e)

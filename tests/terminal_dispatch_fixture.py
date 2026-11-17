@@ -70,7 +70,7 @@ def extract_loop(path):
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
     loops = [
         n
-        for n in main.body
+        for n in ast.walk(main)
         if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "i"
     ]
     assert len(loops) == 1, "Expected exactly one outer control loop"
@@ -249,6 +249,7 @@ def run_case(source, driver, name, native_log, native_timer):
         "_publish_lock": threading.Lock(),
         "_published": [None],
         "_env_step": [0],
+        "_raise_worker_error": lambda: None,
         "_episode_done": threading.Event(),
         "_can_update": threading.Event(),
         "replay_buffer": SimpleNamespace(_size=0),

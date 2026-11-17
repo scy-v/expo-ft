@@ -463,7 +463,7 @@ def main(_):
 
     sink.flush_all()
 
-    if FLAGS.checkpoint_model and not sink.manual_checkpoint:
+    if FLAGS.checkpoint_model and sink.last_saved_step != FLAGS.max_steps:
         try:
             save_checkpoint(checkpoint_manager, agent, FLAGS.max_steps)
             logging.info(f"Saved final agent checkpoint at step {FLAGS.max_steps}")

@@ -21,4 +21,4 @@ python train_pi_robo.py \
   --client_host=0.0.0.0 --client_port=8102 \
   --project_name=expo_ft_ur --output_dir=./checkpoints/online_rl \
   --run_name="${RUN_NAME:-run_001}" --checkpoint_model --checkpoint_buffer \
-  --checkpoint_interval=2000 "$@"
+  --checkpoint_interval=4000 "$@"

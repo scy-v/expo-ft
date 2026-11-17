@@ -87,7 +87,10 @@ class EnvClient:
         self._ensure_server()
         with self._cond:
             while self._pending is None:
-                self._cond.wait()
+                abort_check = getattr(self, "abort_check", None)
+                if abort_check is not None:
+                    abort_check()
+                self._cond.wait(timeout=0.1 if abort_check is not None else None)
             conn, done = self._pending
             self._pending = None
         self._active_done = done
@@ -126,6 +129,9 @@ class EnvClient:
     def _call_operation(self, operation: str, request: dict) -> dict:
         last_exc = None
         for attempt in range(3):
+            abort_check = getattr(self, "abort_check", None)
+            if abort_check is not None:
+                abort_check()
             try:
                 conn = self._get_connection()
                 conn.send(self._packer.pack({"operation": operation, **request}))
@@ -139,6 +145,8 @@ class EnvClient:
                     )
                 return response
             except _RETRY_EXC as e:
+                if abort_check is not None:
+                    abort_check()
                 last_exc = e
                 self._close_connection()
                 if attempt < 2:
@@ -228,10 +236,17 @@ class EnvClientWrapper:
         """Run an op; if the server returns an error, recreate env + reset, then retry."""
         status = "normal"
         while True:
+            # An asynchronous learner failure must not trigger robot reconnection.
+            abort_check = getattr(self, "abort_check", None)
+            if abort_check is not None:
+                abort_check()
+                self.client.abort_check = abort_check
             if status == "normal":
                 try:
                     return thunk()
                 except RuntimeError as e:
+                    if abort_check is not None:
+                        abort_check()
                     logging.warning(f"{op_name} failed ({e}); will recreate env and retry...")
                     status = "recover"
                     time.sleep(10)
@@ -242,6 +257,8 @@ class EnvClientWrapper:
                     except Exception:
                         pass
                     self.client = EnvClient(host=self.host, port=self.port)
+                    if abort_check is not None:
+                        self.client.abort_check = abort_check
                     self.env_id, self.task_description = self.client.create_env(self.env_creation_request)
                     if op_name != "reset":
                         self.client.reset(self.env_id)
