@@ -22,6 +22,7 @@ from expo_ft.agents.alg.batch_utils import prepare_critic_batch, prepare_actor_s
 from expo_ft.networks.temperature import Temperature
 from expo_ft.data.dataset import DatasetDict
 from expo_ft.utils.jax_ready import block_until_ready_serial
+from expo_ft.utils.edit_gradients import edit_component_gradients
 from expo_ft.distributions import TanhNormal
 from expo_ft.networks import (
     MLP,
@@ -737,9 +738,15 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             edit_actor_loss = (
                 self.entropy_scale * log_probs * self.temp.apply_fn({"params": self.temp.params}) - q
             ).mean()
-            return edit_actor_loss, {"edit_q": q.mean(), "edit_actor_loss": edit_actor_loss, "entropy": -log_probs.mean()}
+            # Keep the two weighted objectives separate for gradient diagnostics.
+            # Both VJPs use this same forward pass, including samples and dropout.
+            terms = jnp.stack([
+                (self.entropy_scale * log_probs * self.temp.apply_fn({"params": self.temp.params})).mean(),
+                -q.mean(),
+            ])
+            return terms, {"edit_q": q.mean(), "edit_actor_loss": edit_actor_loss, "entropy": -log_probs.mean()}
 
-        grads, actor_info = jax.grad(edit_actor_loss_fn, has_aux=True)(self.edit_actor.params)
+        grads, actor_info = edit_component_gradients(edit_actor_loss_fn, self.edit_actor.params)
         edit_actor = self.edit_actor.apply_gradients(grads=grads)
 
         return self.replace(edit_actor=edit_actor, rng=rng), actor_info

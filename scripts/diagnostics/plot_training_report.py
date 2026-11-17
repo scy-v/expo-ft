@@ -81,8 +81,22 @@ def main():
 
     def save(fig, name):
         for suffix in ('png', 'pdf', 'svg'):
-            fig.savefig(args.output / f'{name}.{suffix}', dpi=240, facecolor='white')
+            path = args.output / f'{name}.{suffix}'
+            fig.savefig(path, dpi=240, facecolor='white')
+            if suffix == 'svg':
+                path.write_text('\n'.join(line.rstrip() for line in path.read_text().splitlines()) + '\n')
         plt.close(fig)
+
+    def endpoint(ax, value, color, label, offset):
+        ax.scatter([x[-1]], [value], s=125, color=color, edgecolors='white',
+                   linewidths=2, zorder=8)
+        ax.annotate(label, xy=(x[-1], value), xytext=offset,
+                    textcoords='offset points', ha='right' if offset[0] < 0 else 'left',
+                    va='center', fontsize=23, fontweight='bold', color=color,
+                    bbox=dict(boxstyle='round,pad=0.30,rounding_size=0.2',
+                              facecolor='white', edgecolor=color, linewidth=1.2),
+                    arrowprops=dict(arrowstyle='-', color=color, linewidth=1.4,
+                                    shrinkA=5, shrinkB=7), zorder=9)
 
     specs = [('critic_loss', 'Critic Loss', '#3973F6'),
              ('edit_actor_loss', 'Edit Actor Loss', '#F76C50'),
@@ -101,6 +115,8 @@ def main():
         else:
             padding = .12 * np.ptp(y)
             ax.set_ylim(max(0, y.min() - padding), y.max() + padding)
+        endpoint(ax, y[-1], color, f'{y[-1]:.5f}' if key != 'edit_actor_loss'
+                 else f'{y[-1]:.3f}', (-18, 38))
         save(fig, key)
 
     fig, ax = canvas('Q-value Estimates', 'Mean Q', comparison=True)
@@ -113,6 +129,11 @@ def main():
                 linewidth=3.5, marker=marker, markevery=7, markersize=7,
                 markeredgecolor='white', markeredgewidth=1.0,
                 solid_capstyle='round', dash_capstyle='round')
+        offset_y = {'target_q_mean': -60, 'edit_q': -15, 'q': 30}[key]
+        endpoint(ax, values[key][-1], color, f'{values[key][-1]:.4f}', (22, offset_y))
+    # A narrow right-hand label gutter keeps close final Q values legible.
+    ax.set_xlim(0, max(x) + 12)
+    ax.set_xticks([0, 10, 20, 30, 40, 50])
     ax.legend(loc='lower center', bbox_to_anchor=(.5, 1.01), ncol=3,
               frameon=False, handlelength=2.0, columnspacing=1.5, handletextpad=.55)
     save(fig, 'q_values')
