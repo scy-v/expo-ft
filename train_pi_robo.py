@@ -27,6 +27,7 @@ from expo_ft.env.droid_utils import process_droid_dataset
 from expo_ft.utils.log_utils import EpisodeState, TrainingStats
 from expo_ft.utils.loop_utils import AsyncChunkSampler, EpisodeSink
 from expo_ft.utils.timer import Timer
+from expo_ft.utils.jax_ready import block_until_ready_serial
 from expo_ft.utils.train_utils import (
     get_batch_info, init_logging, init_wandb, set_compilation_cache_dir,
 )
@@ -312,7 +313,7 @@ def main(_):
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
             agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
             # Report completed device work, and surface asynchronous OOM here.
-            jax.block_until_ready((agent, update_info))
+            block_until_ready_serial((agent, update_info))
             training_log.record_update_time(time.time() - update_start, metrics)
             for k, v in update_info.items():
                 metrics[f"training/{k}"] = v

@@ -35,7 +35,7 @@ class TimingDiagnosticsTests(unittest.TestCase):
             self.assertGreaterEqual(event['duration_ms'], 15)
             camera.read.assert_called_once()
 
-    def test_gpu_update_wait_precedes_weight_copy_only_when_enabled(self):
+    def test_gpu_update_serial_wait_precedes_weight_copy_with_diagnostics_on_or_off(self):
         # Exercise the real Python wrapper without importing a GPU model.
         import ast
         from contextlib import nullcontext
@@ -52,10 +52,10 @@ class TimingDiagnosticsTests(unittest.TestCase):
             agent._update_jit.side_effect = lambda *a: (events.append('dispatch') or agent, {})
             agent.cache_infer_params.side_effect = lambda: events.append('copy') or agent
             namespace = dict(span=lambda *a: nullcontext(), enabled=lambda: enabled,
-                             jax=Mock(block_until_ready=lambda x: events.append('wait')))
+                             block_until_ready_serial=lambda x: events.append('wait'))
             exec(compile(ast.Module(body=[fn], type_ignores=[]), '<update-wrapper>', 'exec'), namespace)
             namespace['update'](agent, agent, {}, 20, {})
-            self.assertEqual(events, ['dispatch', 'wait', 'copy'] if enabled else ['dispatch', 'copy'])
+            self.assertEqual(events, ['dispatch', 'wait', 'copy'])
 
     def test_disabled_does_not_create_files_or_change_result(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(timing, '_writer', None):

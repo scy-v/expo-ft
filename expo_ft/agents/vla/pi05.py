@@ -1,6 +1,6 @@
 """Wrapper for pi05 agent to make it compatible with expo training framework."""
 
-from client.ur.timing import span, traced, enabled
+from client.ur.timing import span, traced, enabled, transform_pipeline
 import dataclasses
 import functools
 from functools import partial
@@ -356,12 +356,12 @@ def _jitted_sample_with_prefix(transformed_inputs, train_state, rng, prefix, num
     )
 
 
-@jax.jit
-def _jitted_pack_observation(transformed_inputs):
-    """Add the batch dim and scale uint8 images to [-1, 1] in one dispatch."""
-    packed = jax.tree.map(lambda x: jnp.asarray(x)[jnp.newaxis, ...], transformed_inputs)
+def _cpu_pack_observation(transformed_inputs):
+    """Add the batch dim and normalize images on the host before explicit upload."""
+    packed = jax.tree.map(lambda x: np.asarray(x)[np.newaxis, ...], transformed_inputs)
     packed["image"] = {
-        k: v.astype(jnp.float32) / 255.0 * 2.0 - 1.0 if v.dtype == jnp.uint8 else v
+        k: v.astype(np.float32) / np.float32(255) * np.float32(2) - np.float32(1)
+        if v.dtype == np.uint8 else v
         for k, v in packed["image"].items()
     }
     return packed
@@ -540,17 +540,30 @@ class Pi05Agent(Model):
     def process_raw_inputs(self, raw_observations, action_dim, resize_size, normalize=True):
         """Convert raw env observations into a batched model-ready Observation dict."""
         # create a dummy actions
-        raw_observations["actions"] = np.zeros(action_dim)
+        with span('inference.input.dummy_actions'):
+            raw_observations["actions"] = np.zeros(action_dim)
         for key, value in raw_observations.items():
-            raw_observations[key] = np.asarray(value)
+            with span('inference.input.numpy_asarray', field=key):
+                raw_observations[key] = np.asarray(value)
             if "image" in key:
                 # make image uint8
-                raw_observations[key] = raw_observations[key].astype(np.uint8)
-                assert np.max(raw_observations[key]) > 1
+                with span('inference.input.image_uint8', field=key):
+                    raw_observations[key] = raw_observations[key].astype(np.uint8)
+                with span('inference.input.image_validate', field=key):
+                    assert np.max(raw_observations[key]) > 1
 
-        transformed_inputs = self.input_transforms(raw_observations)
-        transformed_inputs = self.input_model_transforms(transformed_inputs)
-        packed = _jitted_pack_observation(transformed_inputs)
+        transformed_inputs = transform_pipeline(self.input_transforms, raw_observations, 'inference.input.data_transforms')
+        transformed_inputs = transform_pipeline(self.input_model_transforms, transformed_inputs, 'inference.input.model_transforms')
+        if enabled():
+            with span('inference.input.transforms_ready'):
+                jax.block_until_ready(transformed_inputs)
+        with span('inference.input.pack_cpu'):
+            packed = _cpu_pack_observation(transformed_inputs)
+        with span('inference.input.upload_dispatch'):
+            packed = jax.device_put(packed, self.infer_sharding)
+        if enabled():
+            with span('inference.input.upload_ready'):
+                jax.block_until_ready(packed)
         # Same key structure Observation.from_dict().to_dict() produced (extra
         # keys like the dummy "actions" are dropped; absent ones default None).
         return {

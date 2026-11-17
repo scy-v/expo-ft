@@ -4,13 +4,16 @@ gradient updates on separate threads (device 0 samples, the rest update)."""
 from client.ur import timing as diagnostics
 import logging
 import os
+import sys
 import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 
 import numpy as np
 import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 from absl import app, flags
 
 from ml_collections import config_flags
@@ -28,6 +31,8 @@ from expo_ft.env.droid_utils import process_droid_dataset
 from expo_ft.utils.log_utils import EpisodeState, TrainingStats
 from expo_ft.utils.loop_utils import AsyncChunkSampler, EpisodeSink
 from expo_ft.utils.timer import Timer
+from expo_ft.utils.jax_ready import block_until_ready_serial
+from expo_ft.utils.update_progress import UpdateProgress, BAR_FORMAT
 from expo_ft.utils.train_utils import (
     get_batch_info, init_logging, init_wandb, set_compilation_cache_dir,
 )
@@ -302,6 +307,7 @@ def main(_):
     _can_update = threading.Event()
     _episode_done = threading.Event()
     _update_count = [0]
+    update_progress = UpdateProgress()
     _worker_error = [None]
 
     def _raise_worker_error():
@@ -368,6 +374,7 @@ def main(_):
             try:
                 _save_pending_checkpoint(learner_agent)
                 if FLAGS.ep_timeout_secs > 0 and time.time() - last_episode_time > FLAGS.ep_timeout_secs:
+                    update_progress.stage('paused')
                     logging.info("No episode finished for %.1fs, pausing updates.", FLAGS.ep_timeout_secs)
                     sink.record_log(_env_step[0], {"training/update_paused": 1})
                     while not _episode_done.wait(timeout=0.1):
@@ -386,6 +393,7 @@ def main(_):
                     last_episode_time = time.time()
 
                 diagnostics.set_context(update=_update_count[0] + 1)
+                update_progress.stage('preparing_batch')
                 with diagnostics.span('learner.buffer_lock_wait'):
                     buffer_lock.acquire()
                 try:
@@ -396,6 +404,7 @@ def main(_):
                 batch_info = get_batch_info(batch)
 
                 t0 = time.time()
+                update_progress.begin()
                 learner_agent = learner_agent.replace(
                     rng=jax.device_put(learner_agent.rng, replicated_sharding)
                 )
@@ -403,7 +412,7 @@ def main(_):
                     learner_agent, update_info = learner_agent.update(
                         learner_agent, batch, FLAGS.utd_ratio, actor_batch
                     )
-                    jax.block_until_ready((learner_agent, update_info))
+                    block_until_ready_serial((learner_agent, update_info))
 
                 with diagnostics.span('learner.publish_lock'):
                     with _publish_lock:
@@ -411,6 +420,7 @@ def main(_):
 
                 update_time.append(time.time() - t0)
                 _update_count[0] += 1
+                update_progress.complete(_update_count[0])
                 log_dict = {f"training/{k}": v for k, v in update_info.items()}
                 log_dict["batch_info"] = batch_info
                 log_dict["training/num_updates"] = _update_count[0]
@@ -420,6 +430,7 @@ def main(_):
 
                 _save_pending_checkpoint(learner_agent)
             except Exception as error:
+                update_progress.stage('failed')
                 _worker_error[0] = error
                 _stop_event.set()
                 logging.exception("Update thread crashed at update %d; stopping rollout", _update_count[0])
@@ -451,10 +462,16 @@ def main(_):
     action_type = "policy"
     first_step_of_episode = True
 
+    progress_bar = tqdm.tqdm(
+        range(start_step, FLAGS.max_steps + 1), smoothing=0.1,
+        disable=not FLAGS.tqdm or not sys.stderr.isatty(),
+        dynamic_ncols=True, bar_format=BAR_FORMAT, mininterval=0.5,
+    )
+    progress_context = ExitStack()
     try:
-        for i in tqdm.tqdm(
-            range(start_step, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
-        ):
+        progress_context.enter_context(logging_redirect_tqdm())
+        update_progress.start(progress_bar)
+        for i in progress_bar:
             _raise_worker_error()
             diagnostics.set_context(step=i)
             step_metrics = {}
@@ -612,6 +629,10 @@ def main(_):
             sampler.close()
             reset_executor.shutdown(wait=False, cancel_futures=True)
         raise
+    finally:
+        update_progress.close()
+        progress_bar.close()
+        progress_context.close()
 
 
 if __name__ == "__main__":

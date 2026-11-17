@@ -21,6 +21,7 @@ from expo_ft.agents.alg.agent import AgentLearner, initialize_checkpoint_dir
 from expo_ft.agents.alg.batch_utils import prepare_critic_batch, prepare_actor_sampling_batch, extract_critic_fields, CRITIC_CAMERA_KEYS
 from expo_ft.networks.temperature import Temperature
 from expo_ft.data.dataset import DatasetDict
+from expo_ft.utils.jax_ready import block_until_ready_serial
 from expo_ft.distributions import TanhNormal
 from expo_ft.networks import (
     MLP,
@@ -492,7 +493,7 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             "target_critic_params": jax.device_put(self.target_critic.params, s),
         })
         if enabled():
-            jax.block_until_ready(result._infer_cache)
+            block_until_ready_serial(result._infer_cache)
         return result
 
     def _sample_edit(self, key, edit_params, encoded_obs, states, base_actions):
@@ -885,8 +886,9 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             new_agent, info = self.replace(_infer_cache=None)._update_jit(
                 agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch
             )
-            if enabled():
-                jax.block_until_ready((new_agent, info))
+            # Finish the update before scheduling inference-weight transfers.
+            # Do not fan out readiness requests over the entire learner tree.
+            block_until_ready_serial((new_agent, info))
         return new_agent.cache_infer_params(), info
 
 
