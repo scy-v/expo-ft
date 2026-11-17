@@ -1,3 +1,4 @@
+from client.ur import timing as diagnostics
 import ast
 from collections import deque
 import logging
@@ -15,7 +16,7 @@ class AsyncFailureTests(unittest.TestCase):
         nodes = [n for n in main.body if isinstance(n, ast.FunctionDef)
                  and n.name in {'_update_worker', '_raise_worker_error'}]
         failed = RuntimeError('simulated learner OOM')
-        env = dict(FLAGS=SimpleNamespace(seed=42, ep_timeout_secs=0),
+        env = dict(diagnostics=diagnostics, FLAGS=SimpleNamespace(seed=42, ep_timeout_secs=0),
                    jax=Mock(), time=Mock(), deque=deque, agent=object(),
                    _can_update=threading.Event(), _stop_event=threading.Event(),
                    _episode_done=threading.Event(), _update_count=[0], _worker_error=[None],

@@ -1,3 +1,4 @@
+from client.ur import timing as diagnostics
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -22,18 +23,25 @@ class Timer:
         self.counts = defaultdict(int)
         self.times = defaultdict(float)
         self.start_times = {}
+        self.spans = {}
 
     def tick(self, key):
         if key in self.start_times:
             raise ValueError(f"Timer is already ticking for key: {key}")
-        self.start_times[key] = time.time()
+        self.start_times[key] = time.perf_counter()
+        if diagnostics.enabled():
+            scope = diagnostics.span("loop." + key)
+            scope.__enter__()
+            self.spans[key] = scope
 
     def tock(self, key):
         if key not in self.start_times:
             raise ValueError(f"Timer is not ticking for key: {key}")
         self.counts[key] += 1
-        self.times[key] += time.time() - self.start_times[key]
+        self.times[key] += time.perf_counter() - self.start_times[key]
         del self.start_times[key]
+        if key in self.spans:
+            self.spans.pop(key).__exit__(None, None, None)
 
     @contextmanager
     def context(self, key):

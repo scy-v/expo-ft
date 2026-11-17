@@ -21,7 +21,7 @@ class LearnerStartupTests(unittest.TestCase):
                 # Execute the real startup block, stopping before W&B/model/robot initialization.
                 block = source[source.index('    log_dir ='):source.index('    from expo_ft.utils.ur_run import')]
                 flags = SimpleNamespace(output_dir=root, run_name='fresh', keep_period=None,
-                                        overwrite=False, resume=False)
+                                        overwrite=False, resume=False, config_task=SimpleNamespace(env_type="test"))
                 ns = dict(os=os, FLAGS=flags, epath=epath,
                           initialize_checkpoint_dir=initialize_checkpoint_dir)
                 exec(compile(textwrap.dedent(block), filename, 'exec'), ns)

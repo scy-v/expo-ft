@@ -8,6 +8,7 @@ Supports operations: create_env, reset, step, get_observation, get_info_for_step
 
 import asyncio
 import dataclasses
+from client.ur import timing as diagnostics
 import logging
 import os
 import socket
@@ -104,6 +105,13 @@ def _get_human_override_action(task_config: Optional[Any] = None) -> tuple:
         return None, False
 
 
+async def _send_timed_response(websocket, packer, response):
+    with diagnostics.span('rpc.response_pack'):
+        packed = packer.pack(response)
+    with diagnostics.span('rpc.response_send'):
+        await websocket.send(packed)
+
+
 async def _reset_ur_environment(env, websocket):
     """Let WebSocket close handling run while reset waits for the physical keyboard."""
     reset = asyncio.create_task(asyncio.to_thread(env.reset))
@@ -143,6 +151,7 @@ async def _handle_environment_request(websocket):
             try:
                 request = msgpack_numpy.unpackb(await websocket.recv())
                 operation = request.get("operation")
+                diagnostics.set_context(rpc_id=request.get('_timing_id'), operation=operation)
                 
                 if operation == "create_env":
                     task_config = load_task_config(_config_task_path)
@@ -171,7 +180,7 @@ async def _handle_environment_request(websocket):
                     
                     task_description = task_config.language_instruction
                     response = {"status": "success", "env_id": env_id, "task_description": task_description}
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
                     logger.info(f"Sent create_env response for {env_id}")
                     
                 elif operation == "reset":
@@ -190,7 +199,7 @@ async def _handle_environment_request(websocket):
                             "observation": obs,
                             "done": False,
                         }
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
                     
                 elif operation == "step":
                     step_rpc_start = time.perf_counter()
@@ -245,7 +254,7 @@ async def _handle_environment_request(websocket):
                             "executed": step_result.get("executed", True) if (is_human or not sent_is_invalid) else False,
                         }
                     t_send0 = time.perf_counter()
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
                     step_rpc_ms = (time.perf_counter() - step_rpc_start) * 1000.0
                     send_ms = (time.perf_counter() - t_send0) * 1000.0
                     if operation == "step" and step_rpc_ms >= _step_timing_threshold_ms:
@@ -282,7 +291,7 @@ async def _handle_environment_request(websocket):
                         }
                         if hasattr(env, 'get_checkpoint_control'):
                             response['checkpoint_control'] = env.get_checkpoint_control()
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
 
                 elif operation == "get_info_for_step":
                     env_id = request["env_id"]
@@ -299,7 +308,7 @@ async def _handle_environment_request(websocket):
                             "reward": float(reward),
                             "mask": float(mask),
                         }
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
 
                 elif operation == "render":
                     env_id = request["env_id"]
@@ -314,11 +323,11 @@ async def _handle_environment_request(websocket):
                             "status": "success",
                             "frame": np.asarray(env.render()),
                         }
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
 
                 else:
                     response = {"status": "error", "message": f"Unknown operation: {operation}"}
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
             
             except websockets.exceptions.ConnectionClosed:
                 logger.debug(f"Connection closed by client {websocket.remote_address}")
@@ -327,7 +336,7 @@ async def _handle_environment_request(websocket):
                 logger.error(f"Error handling request: {e}", exc_info=True)
                 try:
                     response = {"status": "error", "message": str(e)}
-                    await websocket.send(packer.pack(response))
+                    await _send_timed_response(websocket, packer, response)
                 except websockets.exceptions.ConnectionClosed:
                     logger.debug("Connection closed while sending error response")
                     break

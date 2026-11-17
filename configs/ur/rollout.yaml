@@ -4,3 +4,6 @@ warmup_update: true  # Compile training before robot connection; do not apply gr
 # Diagnostic mode: fixed full SFT policy, no EXPO residual actor or critic selection.
 # Learner updates and replay collection continue normally; this is not standard EXPO rollout.
 sft_only: false
+
+# Separate asynchronous JSONL timing diagnostics; restart this side after changing.
+timing_diagnostics: true

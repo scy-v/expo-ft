@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 """Online RL fine-tuning of a pi0.5 policy on the real robot, with env stepping and
 gradient updates on separate threads (device 0 samples, the rest update)."""
+from client.ur import timing as diagnostics
 import logging
 import os
 import threading
@@ -125,6 +126,11 @@ def main(_):
 
     log_dir = os.path.join(FLAGS.output_dir, FLAGS.run_name)
     os.makedirs(log_dir, exist_ok=True)
+    if FLAGS.config_task.env_type == 'ur':
+        import yaml
+        from pathlib import Path
+        settings = yaml.safe_load(Path(FLAGS.config_task.rollout_config_path).read_text())
+        diagnostics.configure(settings.get('timing_diagnostics', False), Path(log_dir) / 'timing', 'server')
     train_video_dir = os.path.join(log_dir, "train_videos")
     os.makedirs(train_video_dir, exist_ok=True)
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
@@ -379,21 +385,29 @@ def main(_):
                     _episode_done.clear()
                     last_episode_time = time.time()
 
-                with buffer_lock:
-                    batch, actor_batch, combine_rng = batch_processor.next_batch(combine_rng)
+                diagnostics.set_context(update=_update_count[0] + 1)
+                with diagnostics.span('learner.buffer_lock_wait'):
+                    buffer_lock.acquire()
+                try:
+                    with diagnostics.span('learner.next_batch_and_upload'):
+                        batch, actor_batch, combine_rng = batch_processor.next_batch(combine_rng)
+                finally:
+                    buffer_lock.release()
                 batch_info = get_batch_info(batch)
 
                 t0 = time.time()
                 learner_agent = learner_agent.replace(
                     rng=jax.device_put(learner_agent.rng, replicated_sharding)
                 )
-                learner_agent, update_info = learner_agent.update(
-                    learner_agent, batch, FLAGS.utd_ratio, actor_batch
-                )
-                jax.block_until_ready((learner_agent, update_info))
+                with diagnostics.span('learner.update_and_cache'):
+                    learner_agent, update_info = learner_agent.update(
+                        learner_agent, batch, FLAGS.utd_ratio, actor_batch
+                    )
+                    jax.block_until_ready((learner_agent, update_info))
 
-                with _publish_lock:
-                    _published[0] = learner_agent._infer_cache
+                with diagnostics.span('learner.publish_lock'):
+                    with _publish_lock:
+                        _published[0] = learner_agent._infer_cache
 
                 update_time.append(time.time() - t0)
                 _update_count[0] += 1
@@ -442,6 +456,7 @@ def main(_):
             range(start_step, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
         ):
             _raise_worker_error()
+            diagnostics.set_context(step=i)
             step_metrics = {}
             timer.reset()
             timer.tick("loop_time")
@@ -449,9 +464,10 @@ def main(_):
             _env_step[0] = i
 
             # Pick up the learner's newest params; an in-flight chunk keeps the ones it started with.
-            with _publish_lock:
-                new_cache = _published[0]
-                _published[0] = None
+            with diagnostics.span('rollout.take_published_weights'):
+                with _publish_lock:
+                    new_cache = _published[0]
+                    _published[0] = None
             if new_cache is not None:
                 _actor_agent = _actor_agent.replace(_infer_cache=new_cache)
 
@@ -475,7 +491,8 @@ def main(_):
                         sample_start = time.time()
                         action_chunk, _actor_agent, sample_info = sampler.sample(_actor_agent, observation, step_metrics)
                         episode_log.sample_info_history.append(sample_info)
-                        action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
+                        with diagnostics.span('inference.action_device_get'):
+                            action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
                         training_log.record_sample_time(time.time() - sample_start, step_metrics)
                         action_plan.extend(action_chunk)
                         # Re-check with the refilled plan (covers delay == replan_steps).
@@ -548,7 +565,8 @@ def main(_):
                     _can_update.set()
                     logging.info("Replay buffer ready (ep_count=%d), starting update thread.", training_log.ep_count)
 
-                pending_reset.result()  # re-raises reset failures on the main thread
+                with diagnostics.span("episode.wait_reset_confirmation"):
+                    pending_reset.result()  # re-raises reset failures on the main thread
                 env.pop_network_ms()  # discard the reset round-trip so it doesn't inflate the next step
                 done = False
                 action_type = "policy"

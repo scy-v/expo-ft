@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 """Online RL fine-tuning of a pi0.5 policy on the real robot."""
+from client.ur import timing as diagnostics
 import logging
 import os
 import threading
@@ -109,6 +110,11 @@ def main(_):
 
     log_dir = os.path.join(FLAGS.output_dir, FLAGS.run_name)
     os.makedirs(log_dir, exist_ok=True)
+    if FLAGS.config_task.env_type == 'ur':
+        import yaml
+        from pathlib import Path
+        settings = yaml.safe_load(Path(FLAGS.config_task.rollout_config_path).read_text())
+        diagnostics.configure(settings.get('timing_diagnostics', False), Path(log_dir) / 'timing', 'server')
     train_video_dir = os.path.join(log_dir, "train_videos")
     os.makedirs(train_video_dir, exist_ok=True)
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
@@ -335,6 +341,7 @@ def main(_):
     for i in tqdm.tqdm(
         range(start_step, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
+        diagnostics.set_context(step=i)
         step_metrics = {}
         timer.reset()
         timer.tick("loop_time")

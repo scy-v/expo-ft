@@ -8,6 +8,8 @@ The upstream episode logger, transition sink and timer remain unchanged.
 
 from __future__ import annotations
 
+from client.ur import timing as diagnostics
+from client.ur.timing import traced
 import ast
 import copy
 import hashlib
@@ -91,6 +93,7 @@ def sink_class(path, emitted_logs):
         raise AssertionError("Disk checkpointing is outside this control")
 
     namespace = {
+        "traced": traced,
         "sys": SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: False)),
         "logging": logging,
         "wandb": SimpleNamespace(log=lambda metrics, step: emitted_logs.append((step, metrics))),
@@ -250,6 +253,7 @@ def run_case(source, driver, name, native_log, native_timer):
         "_published": [None],
         "_env_step": [0],
         "_raise_worker_error": lambda: None,
+        "diagnostics": diagnostics,
         "_episode_done": threading.Event(),
         "_can_update": threading.Event(),
         "replay_buffer": SimpleNamespace(_size=0),

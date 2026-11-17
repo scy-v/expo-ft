@@ -16,6 +16,7 @@
 
 """VLA-Precision UR hardware execution with EXPO-FT checkpoint loading."""
 
+from client.ur.timing import span, traced
 import argparse
 import json
 import logging
@@ -128,7 +129,7 @@ class _ContinuousForceController:
                 with self._condition:
                     target = None if self._target is None else self._target.copy()
                     sequence = self._sequence
-                with self.io_lock:
+                with span("controller.io_lock_and_cycle"), self.io_lock:
                     pose = np.asarray(engine.rtde_r.getActualTCPPose(), dtype=float)
                     velocity = np.asarray(
                         engine.rtde_r.getActualTCPSpeed(), dtype=float
@@ -138,16 +139,17 @@ class _ContinuousForceController:
                         if target is None
                         else engine._calculate_force(target, pose, velocity)
                     )
-                    self._require_success(
-                        engine.rtde_c.forceMode(
-                            engine.task_frame,
-                            [0] * 6 if target is None else engine.select_vector,
-                            wrench,
-                            engine.force_type,
-                            engine.force_limit,
-                        ),
-                        "forceMode",
-                    )
+                    with span("controller.force_mode_send"):
+                        self._require_success(
+                            engine.rtde_c.forceMode(
+                                engine.task_frame,
+                                [0] * 6 if target is None else engine.select_vector,
+                                wrench,
+                                engine.force_type,
+                                engine.force_limit,
+                            ),
+                            "forceMode",
+                        )
                     sent = time.perf_counter()
                 with self._condition:
                     self._samples += 1
@@ -749,8 +751,9 @@ class Inference:
         tcp_transform = ee_transform @ offset_transform
         return self._transform_to_pose(tcp_transform)
 
+    @traced("robot.read_pose_and_offset")
     def get_ee_pose(self) -> np.ndarray:
-        with self._robot_io():
+        with span("robot.pose_io_lock_and_read"), self._robot_io():
             tcp_pose = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
             tcp_offset = self._get_current_tcp_offset()
         return self.tcp_to_ee_pose(tcp_pose, tcp_offset)
@@ -1125,6 +1128,7 @@ class Inference:
             self._target_interval = None if previous is None else sent - previous
         self._last_action_target = sent
 
+    @traced("robot.send_force_action")
     def _send_force_action(
         self, action: np.ndarray, timing: dict[str, float] | None = None
     ):
@@ -1189,6 +1193,7 @@ class Inference:
             if hasattr(self.rtde_c, "forceModeStop"):
                 self.rtde_c.forceModeStop()
 
+    @traced("robot.tracking_action")
     def _send_tracking_action(self, action, timing=None):
         controller = self._force_controller
         if controller is None:
@@ -1201,14 +1206,15 @@ class Inference:
             target = None
             state_read = target_ready = started
         else:
-            with controller.io_lock:
+            with span("robot.target_io_lock_and_read"), controller.io_lock:
                 pose = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
                 state_read = time.perf_counter()
                 target = self._target_pose_from_action(action, current_tcp_pose=pose)
                 target_ready = time.perf_counter()
         self._pace_action_target()
         send_started = time.perf_counter()
-        controller.update_target(target)
+        with span("robot.controller_target_ack"):
+            controller.update_target(target)
         if timing is not None:
             timing["state_read"] = state_read - started
             timing["target"] = target_ready - state_read
@@ -1227,6 +1233,7 @@ class Inference:
             self._record_timing("controller", **timing)
 
     # --------------------------- OBS TRANSFER --------------------------- #
+    @traced("camera.resize_and_state_transform")
     def _transfer_obs_state(self, obs: dict[str, Any]) -> dict[str, Any]:
         """Transfer raw TCP-reference observation state to UR5e policy format."""
 
@@ -1253,6 +1260,7 @@ class Inference:
         return ur5e_obs
 
     # --------------------------- OBS STATE --------------------------- #
+    @traced("robot.read_observation")
     def get_obs_state(self) -> dict[str, Any]:
         """Return current TCP-reference observation from robot."""
         obs = {}
@@ -1265,19 +1273,23 @@ class Inference:
                 obs["tcp_pose"] = self._relative_pose_euler(ee_pose)
             else:
                 raise ValueError(f"Unsupported reference_frame: {self.reference_frame}")
-            with self._robot_io():
-                obs["tcp_speed"] = self.rtde_r.getActualTCPSpeed()
-                obs["tcp_force"] = self.rtde_r.getActualTCPForce()
+            with span("robot.state_io_lock_and_read"), self._robot_io():
+                with span("robot.read_tcp_speed"):
+                    obs["tcp_speed"] = self.rtde_r.getActualTCPSpeed()
+                with span("robot.read_tcp_force"):
+                    obs["tcp_force"] = self.rtde_r.getActualTCPForce()
 
         if self.cameras:
             for name, cam in self.cameras.items():
-                obs[name] = cam.read()
+                with span("camera.read", camera=name):
+                    obs[name] = cam.read()
 
         if self.task_description:
             obs["prompt"] = self.task_description
 
         if not self.fix_gripper and self.gripper:
-            obs["gripper_position"] = self.gripper.position
+            with span("robot.read_gripper"):
+                obs["gripper_position"] = self.gripper.position
 
         return self._transfer_obs_state(obs)
 

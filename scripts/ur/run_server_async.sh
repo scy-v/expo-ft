@@ -10,7 +10,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,0,1}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 # Two training GPUs use batch32 each; allow more than JAX's default 75% memory cap.
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
-export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_MODE="${WANDB_MODE:-online}"
 python train_pi_robo_async.py \
   --config_task=configs/task/ur_insert.py \
   --config=configs/model/expo_ft_ur_config.py \

@@ -7,7 +7,7 @@ DATASET_PATH="${DATASET_PATH:-./data/online_rl/success}"
 ASSET_ID="${ASSET_ID:-scylearning/insert_black_rack_into_blue_slot_20260916_v01}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
-export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_MODE="${WANDB_MODE:-online}"
 python train_pi_robo.py \
   --config_task=configs/task/ur_insert.py \
   --config=configs/model/expo_ft_ur_config.py \

@@ -8,6 +8,7 @@ latency stays flat. The message protocol is unchanged: this side SENDS operation
 requests (create_env/reset/step/...) and the rollout side replies.
 """
 
+from client.ur import timing as diagnostics
 import logging
 import socket
 import threading
@@ -134,11 +135,21 @@ class EnvClient:
                 abort_check()
             try:
                 conn = self._get_connection()
-                conn.send(self._packer.pack({"operation": operation, **request}))
-                recv_start = time.time()
-                raw = conn.recv()
-                self.network_ms += (time.time() - recv_start) * 1000.0
-                response = msgpack_numpy.unpackb(raw)
+                payload = {"operation": operation, **request}
+                rpc_id = f"{time.time_ns()}-{threading.get_ident()}" if diagnostics.enabled() else None
+                if rpc_id is not None:
+                    payload['_timing_id'] = rpc_id
+                with diagnostics.span('rpc.roundtrip', rpc_id=rpc_id, operation=operation, attempt=attempt):
+                    with diagnostics.span('rpc.pack'):
+                        packed = self._packer.pack(payload)
+                    with diagnostics.span('rpc.send'):
+                        conn.send(packed)
+                    recv_start = time.time()
+                    with diagnostics.span('rpc.wait_reply'):
+                        raw = conn.recv()
+                    self.network_ms += (time.time() - recv_start) * 1000.0
+                    with diagnostics.span('rpc.unpack'):
+                        response = msgpack_numpy.unpackb(raw)
                 if response.get("status", response.get("stats")) == "error":
                     raise RuntimeError(
                         f"Environment operation {operation} failed: {response.get('message')}"

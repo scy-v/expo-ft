@@ -3,6 +3,7 @@
 `AsyncChunkSampler` hides main-actor inference latency behind chunk execution;
 `EpisodeSink` holds the work deferred off the control loop until episode end.
 """
+from client.ur.timing import span, traced
 import logging
 import select
 import sys
@@ -198,6 +199,7 @@ class EpisodeSink:
     def record_log(self, step, metrics):
         self._logs.append((step, metrics))
 
+    @traced("episode.buffer_insert")
     def flush_transitions(self):
         """Insert queued transitions into the replay buffer (call before any update)."""
         # Keep the newest transition queued until it is terminal: the next step may still relabel it.
@@ -229,6 +231,7 @@ class EpisodeSink:
         self.manual_checkpoint = control['manual']
         self.checkpoint_requested = control['requested']
 
+    @traced("episode.checkpoint")
     def maybe_save_checkpoint(self, step, agent):
         # Keyboard saves supplement the fixed interval; neither shifts its schedule.
         keyboard = self.manual_checkpoint and self.checkpoint_requested
@@ -255,6 +258,7 @@ class EpisodeSink:
         except Exception as e:
             logging.error("Could not save model checkpoint: %s", e)
 
+    @traced("episode.buffer_disk")
     def _flush_disk_saves(self):
         try:
             while self._disk_saves:
@@ -264,6 +268,7 @@ class EpisodeSink:
         except Exception:
             logging.exception("Could not save agent buffer; will retry at next flush.")
 
+    @traced("episode.wandb_flush")
     def _flush_logs(self):
         # Detach first: an update thread may record while this flushes. wandb needs
         # non-decreasing steps, so log in step order.

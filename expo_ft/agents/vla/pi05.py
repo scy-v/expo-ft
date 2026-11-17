@@ -1,5 +1,6 @@
 """Wrapper for pi05 agent to make it compatible with expo training framework."""
 
+from client.ur.timing import span, traced, enabled
 import dataclasses
 import functools
 from functools import partial
@@ -535,6 +536,7 @@ class Pi05Agent(Model):
             self.train_config, rng, self.mesh, resume=resume, is_target=True
         )
 
+    @traced("inference.input_transform")
     def process_raw_inputs(self, raw_observations, action_dim, resize_size, normalize=True):
         """Convert raw env observations into a batched model-ready Observation dict."""
         # create a dummy actions
@@ -561,6 +563,7 @@ class Pi05Agent(Model):
             "token_loss_mask": packed.get("token_loss_mask"),
         }
 
+    @traced("inference.output_transform")
     def process_transformed_outputs(self, transformed_actions, unnormalize=True):
         """Unnormalize unpadded actions back to the environment action space."""
         n = transformed_actions.shape[0]
@@ -599,6 +602,7 @@ class Pi05Agent(Model):
             jnp.zeros((actions.shape[0], action_horizon, padded_dim - self.action_dim))
         ], axis=-1)
 
+    @traced("inference.pi05")
     def sample_actions(
         self,
         transformed_inputs: Dict,
@@ -628,7 +632,10 @@ class Pi05Agent(Model):
         key = jax.device_put(key, infer_sharding)
         infer_train_state = jax.device_put(train_state, infer_sharding)
         noise_samples = 1 if not self.freeze_pi05_encoder else num_samples
-        sample_info = _jitted_infer(transformed_inputs, infer_train_state, key, self.train_config.policy_metadata, train, noise_samples)
+        with span('inference.pi05_dispatch_and_wait'):
+            sample_info = _jitted_infer(transformed_inputs, infer_train_state, key, self.train_config.policy_metadata, train, noise_samples)
+            if enabled():
+                jax.block_until_ready(sample_info)
 
         actions = self._unpad_actions(sample_info["actions"])
         return actions, sample_info["policy_timing"]["infer_ms"]

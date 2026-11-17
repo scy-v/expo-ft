@@ -1,4 +1,5 @@
 """EXPO environment contract over the shared UR evaluation hardware backend."""
+from client.ur.timing import span, traced
 import logging
 import threading
 import time
@@ -25,6 +26,9 @@ def to_expo_observation(obs):
 class UREnv:
     def __init__(self, ur_config_path='configs/ur/insert.yaml', replan_steps=None, **kwargs):
         config = yaml.safe_load(Path(ur_config_path).read_text())
+        from client.ur.timing import configure
+        configure(config.get('timing_diagnostics', False),
+                  Path(config.get('output_root', './logs/ur-online')) / 'timing', 'robot')
         self.reset_control = config['online'].get('reset_teleop', {})
         for name, default in [('hz', 10.0), ('position_step', 0.045), ('rotation_step', 0.075)]:
             value = self.reset_control.get(name, default)
@@ -124,6 +128,7 @@ class UREnv:
                     self.engine.stop_force()
             self.keyboard.pop_pressed_events()
 
+    @traced("robot.reset_and_confirmation")
     def reset(self):
         self.engine.stop_force()
         if not self._started:
@@ -150,6 +155,7 @@ class UREnv:
                 self.progress.update(self.engine._ep_idx, 0)
         return self.get_observation()
 
+    @traced("robot.keyboard_and_episode_end")
     def _events(self):
         events = self.keyboard.pop_pressed_events()
         if self._started and self._outcome is None and hasattr(self, 'checkpoint_keys'):
@@ -173,6 +179,7 @@ class UREnv:
                 self.engine._ep_idx += 1
         return events
 
+    @traced("robot.observation_total")
     def get_observation(self):
         self._events()
         raw = self.engine.get_obs_state()
@@ -188,6 +195,7 @@ class UREnv:
         done = self._outcome is not None
         return done, bool(self._outcome), float(bool(self._outcome)), float(not done)
 
+    @traced("robot.action_total")
     def step(self, action, *, action_available=True):
         action = np.asarray(action, dtype=np.float64)
         if action.shape != (7,) or not np.isfinite(action).all():

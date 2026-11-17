@@ -1,5 +1,6 @@
 """EXPO-FT learner: Pi0.5 base policy + edit actor + critic (EXPOLearner)."""
 
+from client.ur.timing import span, traced, enabled
 from functools import partial
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 import dataclasses
@@ -474,6 +475,7 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
         full_mask = jnp.tile(mask, self.replan_steps)
         return edit * full_mask
 
+    @traced("learner.copy_inference_weights")
     def cache_infer_params(self):
         """Copy params onto infer_sharding for rollout sampling.
 
@@ -481,7 +483,7 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
         Call again after update() so rollouts use the latest weights.
         """
         s = self.actor.infer_sharding
-        return self.replace(_infer_cache={
+        result = self.replace(_infer_cache={
             # Sampling only reads model_def/params, not optimizer or EMA state.
             "actor_train_state": jax.device_put(
                 self.actor_train_state.replace(opt_state=(), ema_params=None), s),
@@ -489,6 +491,9 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             "edit_actor_params": jax.device_put(self.edit_actor.params, s),
             "target_critic_params": jax.device_put(self.target_critic.params, s),
         })
+        if enabled():
+            jax.block_until_ready(result._infer_cache)
+        return result
 
     def _sample_edit(self, key, edit_params, encoded_obs, states, base_actions):
         r_samples, rng = _sample_actions(
@@ -520,6 +525,7 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             return jnp.concatenate(q_list)
         return compute_q(critic_fn, critic_params, obs, actions, states, self.num_min_qs)
 
+    @traced("inference.expo_total")
     def sample_actions(self, observations, only_base_actions=False):
         # Keep inference-time randomness on the same single device as inference params
         # to avoid cross-device gather/indexing mismatches.
@@ -559,41 +565,45 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
             critic_transformed_obs = critic_transformed_obs.repeat(self.N, axis=0)
             transformed_states = transformed_states.repeat(self.N, axis=0)
 
-        critic_encoded_obs = batch_encode(self.batch_encoder.apply_fn, _batch_encoder_params, critic_transformed_obs[:1], stop_gradient=True)
-        critic_encoded_obs = critic_encoded_obs.repeat(self.N, axis=0)
+        with span('inference.critic_encode_edit_select'):
+            critic_encoded_obs = batch_encode(self.batch_encoder.apply_fn, _batch_encoder_params, critic_transformed_obs[:1], stop_gradient=True)
+            critic_encoded_obs = critic_encoded_obs.repeat(self.N, axis=0)
 
-        if self.N > 1:
-            key, rng = jax.random.split(rng)
-            target_params = subsample_image_ensemble(
-                key, _target_critic_params, self.num_min_qs, self.num_qs
-            )
+            if self.N > 1:
+                key, rng = jax.random.split(rng)
+                target_params = subsample_image_ensemble(
+                    key, _target_critic_params, self.num_min_qs, self.num_qs
+                )
 
-            if self.n_edit_samples > 0:
-                key, rng = jax.random.split(rng, 2)
+                if self.n_edit_samples > 0:
+                    key, rng = jax.random.split(rng, 2)
 
-                critic_encoded_obs = jnp.concatenate([critic_encoded_obs, jnp.expand_dims(critic_encoded_obs[0], axis = 0).repeat(self.n_edit_samples, axis = 0)], axis=0)
-                transformed_states = jnp.concatenate([transformed_states, jnp.expand_dims(transformed_states[0], axis = 0).repeat(self.n_edit_samples, axis = 0)], axis=0)
+                    critic_encoded_obs = jnp.concatenate([critic_encoded_obs, jnp.expand_dims(critic_encoded_obs[0], axis = 0).repeat(self.n_edit_samples, axis = 0)], axis=0)
+                    transformed_states = jnp.concatenate([transformed_states, jnp.expand_dims(transformed_states[0], axis = 0).repeat(self.n_edit_samples, axis = 0)], axis=0)
 
-                r_observations = jnp.repeat(jnp.expand_dims(critic_encoded_obs[0], axis = 0), self.n_edit_samples, axis=0)
-                r_states = jnp.repeat(jnp.expand_dims(transformed_states[0], axis = 0), self.n_edit_samples, axis=0)
-                base_actions = transformed_actions.copy()[:self.n_edit_samples]
+                    r_observations = jnp.repeat(jnp.expand_dims(critic_encoded_obs[0], axis = 0), self.n_edit_samples, axis=0)
+                    r_states = jnp.repeat(jnp.expand_dims(transformed_states[0], axis = 0), self.n_edit_samples, axis=0)
+                    base_actions = transformed_actions.copy()[:self.n_edit_samples]
 
-                r_samples, _, rng = self._sample_edit(key, _edit_actor_params, r_observations, r_states, base_actions)
-                transformed_actions = jnp.concatenate([base_actions, r_samples], axis=0)
+                    r_samples, _, rng = self._sample_edit(key, _edit_actor_params, r_observations, r_states, base_actions)
+                    transformed_actions = jnp.concatenate([base_actions, r_samples], axis=0)
 
-                r_modified = r_samples.reshape(self.n_edit_samples, self.replan_steps, self.action_dim)
-                full_r_modified = transformed_full[:self.n_edit_samples].at[:, :self.replan_steps, :].set(r_modified)
-                raw_r_samples = self.actor.process_transformed_outputs(full_r_modified)
-                raw_actions = jnp.concatenate([raw_actions, raw_r_samples], axis=0)
+                    r_modified = r_samples.reshape(self.n_edit_samples, self.replan_steps, self.action_dim)
+                    full_r_modified = transformed_full[:self.n_edit_samples].at[:, :self.replan_steps, :].set(r_modified)
+                    raw_r_samples = self.actor.process_transformed_outputs(full_r_modified)
+                    raw_actions = jnp.concatenate([raw_actions, raw_r_samples], axis=0)
 
-            qs = compute_q(self.target_critic.apply_fn, target_params, critic_encoded_obs, transformed_actions, transformed_states, self.num_min_qs)
+                qs = compute_q(self.target_critic.apply_fn, target_params, critic_encoded_obs, transformed_actions, transformed_states, self.num_min_qs)
 
-            idx = jnp.argmax(qs)
+                idx = jnp.argmax(qs)
 
-            action = raw_actions[idx]
-        else:
-            action = raw_actions[0]
-            idx = 0
+                action = raw_actions[idx]
+            else:
+                action = raw_actions[0]
+                idx = 0
+
+            if enabled():
+                jax.block_until_ready(action)
 
         action = action.reshape(self.action_horizon, self.action_dim)
         rng, _ = jax.random.split(rng, 2)
@@ -871,9 +881,12 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
 
     def update(self, agent, batch: DatasetDict, utd_ratio: int, actor_batch: DatasetDict = None):
         # Drop stale inference copies before JIT; rebuild after so rollouts use new weights.
-        new_agent, info = self.replace(_infer_cache=None)._update_jit(
-            agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch
-        )
+        with span('learner.network_update'):
+            new_agent, info = self.replace(_infer_cache=None)._update_jit(
+                agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch
+            )
+            if enabled():
+                jax.block_until_ready((new_agent, info))
         return new_agent.cache_infer_params(), info
 
 
